@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: signalcut-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-signalcut}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-signalcut_secure_password_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-signalcut_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signalcut -d signalcut_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: signalcut-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: signalcut-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      DATABASE_URL: Host=postgres;Port=5432;Database=signalcut_db;Username=signalcut;Password=signalcut_secure_password_2026
+      REDIS_URL: redis:6379
+      JWT_SECRET: ${JWT_SECRET:-signalcut_production_secret_key_minimum_32_characters_long_123456}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-SignalCutEncryptionSecret32Bytes!!}
+      AI_WORKER_URL: http://ai-worker:8000
+      AI_PROVIDER: ${AI_PROVIDER:-SignalCut_Engine}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_test_secret_signalcut}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-rzp_secret_test}
+    ports:
+      - "5000:80"
+    volumes:
+      - backend_storage:/app/wwwroot/storage
+      - backend_renders:/app/wwwroot/renders
+
+  ai-worker:
+    build:
+      context: ./ai-worker
+      dockerfile: Dockerfile
+    container_name: signalcut-ai-worker
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      OPENAI_API_KEY: ${AI_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_renders:/backend/src/SignalCut.API/wwwroot/renders
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: signalcut-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_storage:
+  backend_renders:

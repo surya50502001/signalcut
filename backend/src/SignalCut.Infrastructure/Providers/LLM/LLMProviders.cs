@@ -83,7 +83,7 @@ public class CompositeLanguageModelProvider : ILanguageModelProvider
         {
             try
             {
-                var model = _config["AI_MODEL"] ?? "gemini-2.0-flash";
+                var model = _config["AI_MODEL"] ?? "gemini-3.8-flash";
                 var prompt = $@"You are SignalCut AI, an elite vertical video editor and content strategist.
 Analyze the following transcript for the topic: ""{topicQuery}"".
 Ranking Objective: {objective}.

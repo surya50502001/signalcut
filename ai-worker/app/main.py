@@ -341,7 +341,8 @@ def transcribe_media(req: TranscriptionRequest):
                 if audio_files:
                     audio_path = audio_files[0]
                     audio_upload = genai.upload_file(path=audio_path)
-                    model = genai.GenerativeModel("gemini-2.0-flash")
+                    gemini_model_name = os.getenv("AI_MODEL") or "gemini-3.8-flash"
+                    model = genai.GenerativeModel(gemini_model_name)
 
                     prompt = """Transcribe this audio file accurately. 
 Group sentences into natural 10-25 second chunks.
@@ -406,7 +407,8 @@ def analyze_content(req: AnalyzeRequest):
         try:
             import google.generativeai as genai
             genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            gemini_model_name = os.getenv("AI_MODEL") or "gemini-3.8-flash"
+            model = genai.GenerativeModel(gemini_model_name)
             prompt = f"""Analyze this transcript for the topic: '{req.topicQuery}'.
 Return JSON with keys:
 - sentiment: 'positive' | 'neutral' | 'analytical'
@@ -446,7 +448,8 @@ def detect_moments(req: MomentDetectionRequest):
         try:
             import google.generativeai as genai
             genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            gemini_model_name = os.getenv("AI_MODEL") or "gemini-3.8-flash"
+            model = genai.GenerativeModel(gemini_model_name)
 
             prompt = f"""You are SignalCut AI, an elite vertical video editor and content strategist.
 Analyze the following transcript for the topic: "{topic_clean}".

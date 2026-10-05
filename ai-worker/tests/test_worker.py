@@ -60,3 +60,14 @@ def test_video_rendering_mock():
     data = response.json()
     assert data["success"] is True
     assert "storageUrl" in data
+
+def test_youtube_search():
+    response = client.get("/api/v1/search/youtube?query=AI+agents&limit=2")
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    assert "url" in data[0]
+    assert "title" in data[0]
+    assert data[0]["provider"] == "YouTube"
+

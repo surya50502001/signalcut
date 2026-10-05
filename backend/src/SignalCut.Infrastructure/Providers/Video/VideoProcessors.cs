@@ -112,8 +112,14 @@ public class CompositeVideoProcessor : IVideoProcessor
 
         if (!ffmpegSuccess)
         {
-            // If ffmpeg was not invokable in test runner, write a mock valid video container
-            await File.WriteAllTextAsync(outputPath, "SIGNALCUT_RENDERED_VIDEO_PAYLOAD_MOCK", ct);
+            return new RenderVideoResult(
+                Success: false,
+                StorageKey: "",
+                StorageUrl: "",
+                ThumbnailUrl: null,
+                DurationSeconds: 0,
+                ErrorMessage: "Video rendering engine failed. Ensure ai-worker is running or FFmpeg is installed on the host."
+            );
         }
 
         onProgress?.Invoke(100);
@@ -123,7 +129,7 @@ public class CompositeVideoProcessor : IVideoProcessor
             Success: true,
             StorageKey: $"renders/{outputFileName}",
             StorageUrl: cdnUrl,
-            ThumbnailUrl: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=800&q=80",
+            ThumbnailUrl: null,
             DurationSeconds: duration,
             ErrorMessage: null
         );

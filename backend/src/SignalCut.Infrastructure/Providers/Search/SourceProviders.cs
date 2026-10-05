@@ -1,4 +1,7 @@
+using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SignalCut.Application.Interfaces;
 using SignalCut.Domain.Enums;
@@ -7,83 +10,98 @@ namespace SignalCut.Infrastructure.Providers.Search;
 
 public class YouTubeSourceProvider : ISourceProvider
 {
+    private readonly HttpClient _httpClient;
+    private readonly IConfiguration _config;
     private readonly ILogger<YouTubeSourceProvider> _logger;
 
     public string ProviderName => "YouTube";
 
-    public YouTubeSourceProvider(ILogger<YouTubeSourceProvider> logger)
+    public YouTubeSourceProvider(
+        HttpClient httpClient,
+        IConfiguration config,
+        ILogger<YouTubeSourceProvider> logger)
     {
+        _httpClient = httpClient;
+        _config = config;
         _logger = logger;
     }
 
-    public Task<IEnumerable<SourceDiscoveryItem>> SearchAsync(string query, int limit = 20, CancellationToken ct = default)
+    public async Task<IEnumerable<SourceDiscoveryItem>> SearchAsync(string query, int limit = 20, CancellationToken ct = default)
     {
-        _logger.LogInformation("Searching YouTube provider for query: {Query}", query);
+        _logger.LogInformation("Executing real YouTube discovery search for query: {Query}", query);
 
-        // Generates realistic discovered content based on topic query
-        var sanitizedTopic = query.Replace("?", "").Trim();
-        var items = new List<SourceDiscoveryItem>
+        var workerUrl = _config["AI_WORKER_URL"] ?? "http://localhost:8000";
+
+        try
         {
-            new(
-                $"yt_{Math.Abs(query.GetHashCode()) % 100000 + 101}",
-                ProviderName,
-                $"{sanitizedTopic} - In-Depth Keynote & Discussion",
-                $"Full technical keynote exploring {sanitizedTopic}, the architectural implications, practical case studies, and engineering paradigms.",
-                "Tech Pioneers & Leaders",
-                $"https://www.youtube.com/watch?v=sc_{Math.Abs(query.GetHashCode()) % 90000 + 10000}",
-                DateTime.UtcNow.AddDays(-14),
-                3120, // 52 mins
-                "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=800&q=80",
-                "en",
-                ContentType.VIDEO,
-                RightsStatus.DISCOVERY_ONLY, // Default discovery status to protect copyright
-                AuthorizationStatus.NOT_REQUIRED,
-                TranscriptAvailability: true,
-                RelevanceScore: 0.96
-            ),
-            new(
-                $"yt_{Math.Abs(query.GetHashCode()) % 100000 + 102}",
-                ProviderName,
-                $"The Real Truth About {sanitizedTopic} Explained",
-                $"An analytical breakdown of {sanitizedTopic} covering contrarian viewpoints, industry data, and future outlook.",
-                "Engineering Insights Channel",
-                $"https://www.youtube.com/watch?v=sc_{Math.Abs(query.GetHashCode()) % 90000 + 20000}",
-                DateTime.UtcNow.AddDays(-7),
-                1840, // ~30 mins
-                "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&q=80",
-                "en",
-                ContentType.VIDEO,
-                RightsStatus.DISCOVERY_ONLY,
-                AuthorizationStatus.NOT_REQUIRED,
-                TranscriptAvailability: true,
-                RelevanceScore: 0.91
-            )
-        };
+            // Call AI worker yt-dlp discovery endpoint
+            var url = $"{workerUrl}/api/v1/search/youtube?query={Uri.EscapeDataString(query)}&limit={limit}";
+            var response = await _httpClient.GetAsync(url, ct);
 
-        return Task.FromResult<IEnumerable<SourceDiscoveryItem>>(items);
+            if (response.IsSuccessStatusCode)
+            {
+                var searchResults = await response.Content.ReadFromJsonAsync<List<WorkerSearchResultDto>>(cancellationToken: ct);
+                if (searchResults != null && searchResults.Count > 0)
+                {
+                    _logger.LogInformation("Successfully retrieved {Count} real YouTube videos from AI worker discovery", searchResults.Count);
+                    return searchResults.Select(r => new SourceDiscoveryItem(
+                        r.Id,
+                        r.Provider ?? ProviderName,
+                        r.Title,
+                        r.Description,
+                        r.Creator,
+                        r.Url,
+                        DateTime.TryParse(r.PublishedAt, out var dt) ? dt : DateTime.UtcNow.AddDays(-7),
+                        r.DurationSeconds,
+                        r.ThumbnailUrl,
+                        r.Language ?? "en",
+                        ContentType.VIDEO,
+                        RightsStatus.DISCOVERY_ONLY,
+                        AuthorizationStatus.NOT_REQUIRED,
+                        r.TranscriptAvailability,
+                        r.RelevanceScore
+                    ));
+                }
+            }
+            else
+            {
+                _logger.LogWarning("AI worker YouTube search returned status code {Code}", response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch YouTube search results via AI worker. Ensure ai-worker is running at {Url}", workerUrl);
+        }
+
+        // Return empty or fallback only if AI worker is not reachable
+        return Enumerable.Empty<SourceDiscoveryItem>();
     }
 
-    public Task<SourceDiscoveryItem?> GetMetadataAsync(string urlOrId, CancellationToken ct = default)
+    public async Task<SourceDiscoveryItem?> GetMetadataAsync(string urlOrId, CancellationToken ct = default)
     {
-        return Task.FromResult<SourceDiscoveryItem?>(new SourceDiscoveryItem(
-            "yt_sample",
-            ProviderName,
-            "Sample YouTube Video",
-            "Discovered sample video metadata.",
-            "Creator Studio",
-            urlOrId,
-            DateTime.UtcNow.AddDays(-3),
-            1200,
-            "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=800&q=80",
-            "en",
-            ContentType.VIDEO,
-            RightsStatus.DISCOVERY_ONLY,
-            AuthorizationStatus.NOT_REQUIRED,
-            true,
-            0.9
-        ));
+        var searchResults = await SearchAsync(urlOrId, 1, ct);
+        return searchResults.FirstOrDefault();
     }
+
+    private sealed record WorkerSearchResultDto(
+        string Id,
+        string Provider,
+        string Title,
+        string Description,
+        string Creator,
+        string Url,
+        string PublishedAt,
+        int DurationSeconds,
+        string ThumbnailUrl,
+        string Language,
+        string ContentType,
+        string RightsStatus,
+        string AuthorizationStatus,
+        bool TranscriptAvailability,
+        double RelevanceScore
+    );
 }
+
 
 public class PodcastSourceProvider : ISourceProvider
 {

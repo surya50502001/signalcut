@@ -51,9 +51,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:-signalcut_production_secret_key_minimum_32_characters_long_123456}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-SignalCutEncryptionSecret32Bytes!!}
       AI_WORKER_URL: http://ai-worker:8000
-      AI_PROVIDER: ${AI_PROVIDER:-SignalCut_Engine}
-      AI_API_KEY: ${AI_API_KEY:-}
-      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_API_KEY: ${GEMINI_API_KEY:-${AI_API_KEY:-}}
+      AI_MODEL: ${AI_MODEL:-gemini-2.0-flash}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_test_secret_signalcut}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-rzp_secret_test}
     ports:
@@ -70,11 +71,14 @@ services:
     restart: unless-stopped
     environment:
       PYTHONUNBUFFERED: "1"
-      OPENAI_API_KEY: ${AI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      AI_API_KEY: ${GEMINI_API_KEY:-${AI_API_KEY:-}}
+      RENDERS_OUTPUT_DIR: /app/renders
     ports:
       - "8000:8000"
     volumes:
-      - backend_renders:/backend/src/SignalCut.API/wwwroot/renders
+      - backend_renders:/app/renders
+
 
   frontend:
     build:

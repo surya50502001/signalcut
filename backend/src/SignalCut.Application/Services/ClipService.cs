@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SignalCut.Application.Common;
 using SignalCut.Application.DTOs;
@@ -15,20 +16,24 @@ public class ClipService : IClipService
     private readonly ICreditWalletService _creditWalletService;
     private readonly IVideoProcessor _videoProcessor;
     private readonly ILogger<ClipService> _logger;
+    private readonly IServiceScopeFactory? _scopeFactory;
 
     public ClipService(
         IApplicationDbContext context,
         IRightsAuthorizationService rightsAuthService,
         ICreditWalletService creditWalletService,
         IVideoProcessor videoProcessor,
-        ILogger<ClipService> logger)
+        ILogger<ClipService> logger,
+        IServiceScopeFactory? scopeFactory = null)
     {
         _context = context;
         _rightsAuthService = rightsAuthService;
         _creditWalletService = creditWalletService;
         _videoProcessor = videoProcessor;
         _logger = logger;
+        _scopeFactory = scopeFactory;
     }
+
 
     public async Task<ClipDto> CreateClipFromMomentAsync(Guid organizationId, Guid userId, CreateClipRequest request, CancellationToken ct = default)
     {
@@ -208,80 +213,172 @@ public class ClipService : IClipService
         clip.RenderStatus = JobStatus.QUEUED;
         await _context.SaveChangesAsync(ct);
 
-        // 4. Trigger asynchronous background render execution
+        // 4. Trigger asynchronous background render execution with isolated DI scope
         _ = Task.Run(async () =>
         {
-            try
+            if (_scopeFactory != null)
             {
-                job.Status = JobStatus.PROCESSING;
-                job.StartedAt = DateTime.UtcNow;
-                job.ProgressPercentage = 25;
-                job.CurrentStep = "Extracting video frames and applying 9:16 smart crop";
-                await _context.SaveChangesAsync();
+                using var scope = _scopeFactory.CreateScope();
+                var scopedContext = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+                var scopedWalletService = scope.ServiceProvider.GetRequiredService<ICreditWalletService>();
+                var scopedVideoProcessor = scope.ServiceProvider.GetRequiredService<IVideoProcessor>();
 
-                var captionsList = new List<TranscriptChunkResult>
+                try
                 {
-                    new(0, clip.StartTime, clip.EndTime, clip.Hook, clip.Moment.Speaker, 0.98)
-                };
+                    var bgJob = await scopedContext.Jobs.FirstOrDefaultAsync(j => j.Id == jobId);
+                    var bgClip = await scopedContext.Clips.Include(c => c.Moment).ThenInclude(m => m.Source).FirstOrDefaultAsync(c => c.Id == clipId);
 
-                var renderReq = new RenderVideoRequest(
-                    clip.Id,
-                    clip.Moment.Source.Url,
-                    clip.StartTime,
-                    clip.EndTime,
-                    clip.AspectRatio,
-                    clip.ResolutionWidth,
-                    clip.ResolutionHeight,
-                    clip.HasWatermark,
-                    clip.CaptionStyle,
-                    clip.FontName,
-                    clip.FontSize,
-                    clip.PrimaryColorHex,
-                    clip.HighlightColorHex,
-                    clip.BackgroundColorHex,
-                    null,
-                    clip.ShowProgressBar,
-                    captionsList
-                );
+                    if (bgJob != null && bgClip != null)
+                    {
+                        bgJob.Status = JobStatus.PROCESSING;
+                        bgJob.StartedAt = DateTime.UtcNow;
+                        bgJob.ProgressPercentage = 25;
+                        bgJob.CurrentStep = "Extracting video frames and applying 9:16 smart crop";
+                        await scopedContext.SaveChangesAsync();
 
-                var renderResult = await _videoProcessor.RenderClipAsync(renderReq, progress =>
-                {
-                    job.ProgressPercentage = progress;
-                });
+                        var captionsList = new List<TranscriptChunkResult>
+                        {
+                            new(0, bgClip.StartTime, bgClip.EndTime, bgClip.Hook, bgClip.Moment.Speaker, 0.98)
+                        };
 
-                if (renderResult.Success)
-                {
-                    clip.RenderedVideoStorageKey = renderResult.StorageKey;
-                    clip.RenderedVideoUrl = renderResult.StorageUrl;
-                    clip.ThumbnailUrl = renderResult.ThumbnailUrl;
-                    clip.RenderStatus = JobStatus.COMPLETED;
+                        var renderReq = new RenderVideoRequest(
+                            bgClip.Id,
+                            bgClip.Moment.Source.Url,
+                            bgClip.StartTime,
+                            bgClip.EndTime,
+                            bgClip.AspectRatio,
+                            bgClip.ResolutionWidth,
+                            bgClip.ResolutionHeight,
+                            bgClip.HasWatermark,
+                            bgClip.CaptionStyle,
+                            bgClip.FontName,
+                            bgClip.FontSize,
+                            bgClip.PrimaryColorHex,
+                            bgClip.HighlightColorHex,
+                            bgClip.BackgroundColorHex,
+                            null,
+                            bgClip.ShowProgressBar,
+                            captionsList
+                        );
 
-                    job.Status = JobStatus.COMPLETED;
-                    job.ProgressPercentage = 100;
-                    job.CurrentStep = "Render completed successfully";
-                    job.CompletedAt = DateTime.UtcNow;
-                    job.ActualCreditsConsumed = requiredCredits;
-                    job.IsCreditFinalized = true;
+                        var renderResult = await scopedVideoProcessor.RenderClipAsync(renderReq, progress =>
+                        {
+                            bgJob.ProgressPercentage = progress;
+                        });
 
-                    await _context.SaveChangesAsync();
-                    await _creditWalletService.CommitReservedCreditsAsync(organizationId, jobId, requiredCredits, $"Video Render for Clip {clip.Id}");
+                        if (renderResult.Success)
+                        {
+                            bgClip.RenderedVideoStorageKey = renderResult.StorageKey;
+                            bgClip.RenderedVideoUrl = renderResult.StorageUrl;
+                            bgClip.ThumbnailUrl = renderResult.ThumbnailUrl;
+                            bgClip.RenderStatus = JobStatus.COMPLETED;
+
+                            bgJob.Status = JobStatus.COMPLETED;
+                            bgJob.ProgressPercentage = 100;
+                            bgJob.CurrentStep = "Render completed successfully";
+                            bgJob.CompletedAt = DateTime.UtcNow;
+                            bgJob.ActualCreditsConsumed = requiredCredits;
+                            bgJob.IsCreditFinalized = true;
+
+                            await scopedContext.SaveChangesAsync();
+                            await scopedWalletService.CommitReservedCreditsAsync(organizationId, jobId, requiredCredits, $"Video Render for Clip {bgClip.Id}");
+                        }
+                        else
+                        {
+                            throw new Exception(renderResult.ErrorMessage ?? "Rendering failed.");
+                        }
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    throw new Exception(renderResult.ErrorMessage ?? "Rendering failed.");
+                    _logger.LogError(ex, "Failed to render clip {ClipId} in job {JobId}", clipId, jobId);
+                    var bgJob = await scopedContext.Jobs.FirstOrDefaultAsync(j => j.Id == jobId);
+                    var bgClip = await scopedContext.Clips.FirstOrDefaultAsync(c => c.Id == clipId);
+
+                    if (bgClip != null) bgClip.RenderStatus = JobStatus.FAILED;
+                    if (bgJob != null)
+                    {
+                        bgJob.Status = JobStatus.FAILED;
+                        bgJob.ErrorMessage = ex.Message;
+                        bgJob.CurrentStep = "Failed during rendering";
+                    }
+                    await scopedContext.SaveChangesAsync();
+                    await scopedWalletService.RefundReservedCreditsAsync(organizationId, jobId, $"Render failure: {ex.Message}");
                 }
             }
-            catch (Exception ex)
+            else
             {
-                _logger.LogError(ex, "Failed to render clip {ClipId} in job {JobId}", clipId, jobId);
-                clip.RenderStatus = JobStatus.FAILED;
-                job.Status = JobStatus.FAILED;
-                job.ErrorMessage = ex.Message;
-                job.CurrentStep = "Failed during rendering";
-                await _context.SaveChangesAsync();
+                // Fallback for isolated test runs without DI scope factory
+                try
+                {
+                    job.Status = JobStatus.PROCESSING;
+                    job.StartedAt = DateTime.UtcNow;
+                    job.ProgressPercentage = 25;
+                    job.CurrentStep = "Extracting video frames and applying 9:16 smart crop";
+                    await _context.SaveChangesAsync();
 
-                // CRITICAL: Release reserved credits on failure
-                await _creditWalletService.RefundReservedCreditsAsync(organizationId, jobId, $"Render failure: {ex.Message}");
+                    var captionsList = new List<TranscriptChunkResult>
+                    {
+                        new(0, clip.StartTime, clip.EndTime, clip.Hook, clip.Moment.Speaker, 0.98)
+                    };
+
+                    var renderReq = new RenderVideoRequest(
+                        clip.Id,
+                        clip.Moment.Source.Url,
+                        clip.StartTime,
+                        clip.EndTime,
+                        clip.AspectRatio,
+                        clip.ResolutionWidth,
+                        clip.ResolutionHeight,
+                        clip.HasWatermark,
+                        clip.CaptionStyle,
+                        clip.FontName,
+                        clip.FontSize,
+                        clip.PrimaryColorHex,
+                        clip.HighlightColorHex,
+                        clip.BackgroundColorHex,
+                        null,
+                        clip.ShowProgressBar,
+                        captionsList
+                    );
+
+                    var renderResult = await _videoProcessor.RenderClipAsync(renderReq, progress =>
+                    {
+                        job.ProgressPercentage = progress;
+                    });
+
+                    if (renderResult.Success)
+                    {
+                        clip.RenderedVideoStorageKey = renderResult.StorageKey;
+                        clip.RenderedVideoUrl = renderResult.StorageUrl;
+                        clip.ThumbnailUrl = renderResult.ThumbnailUrl;
+                        clip.RenderStatus = JobStatus.COMPLETED;
+
+                        job.Status = JobStatus.COMPLETED;
+                        job.ProgressPercentage = 100;
+                        job.CurrentStep = "Render completed successfully";
+                        job.CompletedAt = DateTime.UtcNow;
+                        job.ActualCreditsConsumed = requiredCredits;
+                        job.IsCreditFinalized = true;
+
+                        await _context.SaveChangesAsync();
+                        await _creditWalletService.CommitReservedCreditsAsync(organizationId, jobId, requiredCredits, $"Video Render for Clip {clip.Id}");
+                    }
+                    else
+                    {
+                        throw new Exception(renderResult.ErrorMessage ?? "Rendering failed.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to render clip {ClipId} in job {JobId}", clipId, jobId);
+                    clip.RenderStatus = JobStatus.FAILED;
+                    job.Status = JobStatus.FAILED;
+                    job.ErrorMessage = ex.Message;
+                    job.CurrentStep = "Failed during rendering";
+                    await _context.SaveChangesAsync();
+                    await _creditWalletService.RefundReservedCreditsAsync(organizationId, jobId, $"Render failure: {ex.Message}");
+                }
             }
         });
 

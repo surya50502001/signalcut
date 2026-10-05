@@ -570,9 +570,25 @@ def render_video_clip(req: RenderClipRequest):
     with tempfile.TemporaryDirectory() as tmp_dir:
         source_segment_path = os.path.join(tmp_dir, "segment.mp4")
 
-        # 1. Download only the required section using yt-dlp
+        # 1. Acquire required segment: from authorized uploaded local media or permitted remote source
         is_downloaded = False
-        if req.sourceVideoUrl.startswith("http://") or req.sourceVideoUrl.startswith("https://"):
+        if os.path.exists(req.sourceVideoUrl):
+            try:
+                cut_start = max(0.0, req.startTime)
+                cut_end = req.endTime
+                cmd_slice = [
+                    FFMPEG_BIN, "-y",
+                    "-ss", str(cut_start),
+                    "-to", str(cut_end),
+                    "-i", req.sourceVideoUrl,
+                    "-c", "copy",
+                    source_segment_path
+                ]
+                subprocess.run(cmd_slice, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                is_downloaded = True
+            except Exception as slice_err:
+                print(f"Warning: Local media slice failed: {slice_err}", file=sys.stderr)
+        elif req.sourceVideoUrl.startswith("http://") or req.sourceVideoUrl.startswith("https://"):
             try:
                 # Add 0.5s buffer before/after for smooth cut
                 cut_start = max(0.0, req.startTime)

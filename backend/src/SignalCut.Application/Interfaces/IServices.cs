@@ -35,6 +35,15 @@ public interface IRightsAuthorizationService
 {
     Task<RightsConfirmationResponse> ConfirmRightsAsync(Guid organizationId, Guid userId, RightsConfirmationRequest request, CancellationToken ct = default);
     Task<bool> AssertCanEnterGenerationPipelineAsync(Guid sourceId, CancellationToken ct = default);
+    Task<UploadMediaResultDto> UploadAndAuthorizeMediaAsync(
+        Guid organizationId,
+        Guid userId,
+        Guid sourceId,
+        Stream fileStream,
+        string fileName,
+        string contentType,
+        RightsConfirmationRequest confirmation,
+        CancellationToken ct = default);
 }
 
 public interface IMomentService

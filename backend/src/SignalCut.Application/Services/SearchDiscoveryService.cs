@@ -126,7 +126,9 @@ public class SearchDiscoveryService : ISearchDiscoveryService
                                            (source.RightsStatus == RightsStatus.USER_AUTHORIZED && source.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
                                            source.RightsStatus == RightsStatus.LICENSED ||
                                            source.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
-                source.RelevanceScore
+                source.RelevanceScore,
+                BestMomentTimestamp: FormatBestMomentTimestamp(source.DurationSeconds, source.RelevanceScore),
+                Episode: ExtractEpisode(source.Title)
             ));
         }
 
@@ -168,7 +170,9 @@ public class SearchDiscoveryService : ISearchDiscoveryService
                                        (source.RightsStatus == RightsStatus.USER_AUTHORIZED && source.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
                                        source.RightsStatus == RightsStatus.LICENSED ||
                                        source.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
-            source.RelevanceScore
+            source.RelevanceScore,
+            BestMomentTimestamp: FormatBestMomentTimestamp(source.DurationSeconds, source.RelevanceScore),
+            Episode: ExtractEpisode(source.Title)
         );
     }
 
@@ -179,30 +183,51 @@ public class SearchDiscoveryService : ISearchDiscoveryService
             .OrderByDescending(s => s.CreatedAt)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(s => new SourceDto(
-                s.Id,
-                s.ExternalSourceId,
-                s.Provider,
-                s.Title,
-                s.Description,
-                s.Creator,
-                s.Url,
-                s.PublishedAt,
-                s.DurationSeconds,
-                s.ThumbnailUrl,
-                s.Language,
-                s.ContentType,
-                s.RightsStatus,
-                s.AuthorizationStatus,
-                s.TranscriptAvailability,
-                s.RightsStatus == RightsStatus.USER_OWNED ||
-                (s.RightsStatus == RightsStatus.USER_AUTHORIZED && s.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
-                s.RightsStatus == RightsStatus.LICENSED ||
-                s.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
-                s.RelevanceScore
-            ))
             .ToListAsync(ct);
 
-        return sources;
+        return sources.Select(s => new SourceDto(
+            s.Id,
+            s.ExternalSourceId,
+            s.Provider,
+            s.Title,
+            s.Description,
+            s.Creator,
+            s.Url,
+            s.PublishedAt,
+            s.DurationSeconds,
+            s.ThumbnailUrl,
+            s.Language,
+            s.ContentType,
+            s.RightsStatus,
+            s.AuthorizationStatus,
+            s.TranscriptAvailability,
+            s.RightsStatus == RightsStatus.USER_OWNED ||
+            (s.RightsStatus == RightsStatus.USER_AUTHORIZED && s.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
+            s.RightsStatus == RightsStatus.LICENSED ||
+            s.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
+            s.RelevanceScore,
+            BestMomentTimestamp: FormatBestMomentTimestamp(s.DurationSeconds, s.RelevanceScore),
+            Episode: ExtractEpisode(s.Title)
+        )).ToList();
+    }
+
+    private static string? ExtractEpisode(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        var match = System.Text.RegularExpressions.Regex.Match(
+            title,
+            @"(?:Episode|Ep\.?|#)\s*(\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? $"Episode {match.Groups[1].Value}" : null;
+    }
+
+    private static string FormatBestMomentTimestamp(double durationSeconds, double relevanceScore)
+    {
+        if (durationSeconds <= 0) return "00:00";
+        var targetSecs = Math.Max(30, Math.Min(durationSeconds * 0.35, durationSeconds - 30));
+        var mins = (int)(targetSecs / 60);
+        var secs = (int)(targetSecs % 60);
+        return $"{mins:D2}:{secs:D2}";
     }
 }
+

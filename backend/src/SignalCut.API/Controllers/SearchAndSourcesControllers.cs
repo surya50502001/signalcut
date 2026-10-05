@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using SignalCut.Application.Common;
 using SignalCut.Application.DTOs;
 using SignalCut.Application.Interfaces;
+using SignalCut.Domain.Enums;
 
 namespace SignalCut.API.Controllers;
 
@@ -75,6 +77,39 @@ public class SourcesController : ControllerBase
         var userId = _userContext.UserId ?? Guid.Parse("00000000-0000-0000-0000-000000000002");
 
         var response = await _rightsService.ConfirmRightsAsync(orgId, userId, request, ct);
+        return Ok(new { success = true, data = response });
+    }
+
+    [HttpPost("{id}/upload-media")]
+    [Consumes("multipart/form-data")]
+    public async Task<IActionResult> UploadMedia(
+        Guid id,
+        [FromForm] IFormFile file,
+        [FromForm] string confirmationStatement,
+        [FromForm] RightsStatus claimedRightsStatus = RightsStatus.USER_AUTHORIZED,
+        [FromForm] string? proofDocumentUrl = null,
+        CancellationToken ct = default)
+    {
+        if (file == null || file.Length == 0)
+        {
+            return BadRequest(new { success = false, error = new { code = "INVALID_FILE", message = "A video or audio file must be uploaded." } });
+        }
+
+        var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var userId = _userContext.UserId ?? Guid.Parse("00000000-0000-0000-0000-000000000002");
+
+        using var stream = file.OpenReadStream();
+        var confirmReq = new RightsConfirmationRequest(id, claimedRightsStatus, confirmationStatement, proofDocumentUrl);
+        var response = await _rightsService.UploadAndAuthorizeMediaAsync(
+            orgId,
+            userId,
+            id,
+            stream,
+            file.FileName,
+            file.ContentType,
+            confirmReq,
+            ct);
+
         return Ok(new { success = true, data = response });
     }
 }

@@ -241,9 +241,22 @@ public class ClipService : IClipService
                             new(0, bgClip.StartTime, bgClip.EndTime, bgClip.Hook, bgClip.Moment.Speaker, 0.98)
                         };
 
+                        var mediaAsset = await scopedContext.MediaAssets
+                            .Where(m => m.SourceId == bgClip.Moment.SourceId)
+                            .OrderByDescending(m => m.CreatedAt)
+                            .FirstOrDefaultAsync();
+
+                        var sourceVideoUrl = mediaAsset?.StorageUrl ?? bgClip.Moment.Source.Url;
+                        if (!string.IsNullOrEmpty(sourceVideoUrl) && sourceVideoUrl.StartsWith("/storage/"))
+                        {
+                            var relative = sourceVideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                            var localPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", relative);
+                            if (File.Exists(localPath)) sourceVideoUrl = localPath;
+                        }
+
                         var renderReq = new RenderVideoRequest(
                             bgClip.Id,
-                            bgClip.Moment.Source.Url,
+                            sourceVideoUrl,
                             bgClip.StartTime,
                             bgClip.EndTime,
                             bgClip.AspectRatio,
@@ -322,9 +335,22 @@ public class ClipService : IClipService
                         new(0, clip.StartTime, clip.EndTime, clip.Hook, clip.Moment.Speaker, 0.98)
                     };
 
+                    var fallbackAsset = await _context.MediaAssets
+                        .Where(m => m.SourceId == clip.Moment.SourceId)
+                        .OrderByDescending(m => m.CreatedAt)
+                        .FirstOrDefaultAsync();
+
+                    var fallbackVideoUrl = fallbackAsset?.StorageUrl ?? clip.Moment.Source.Url;
+                    if (!string.IsNullOrEmpty(fallbackVideoUrl) && fallbackVideoUrl.StartsWith("/storage/"))
+                    {
+                        var relative = fallbackVideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                        var localPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", relative);
+                        if (File.Exists(localPath)) fallbackVideoUrl = localPath;
+                    }
+
                     var renderReq = new RenderVideoRequest(
                         clip.Id,
-                        clip.Moment.Source.Url,
+                        fallbackVideoUrl,
                         clip.StartTime,
                         clip.EndTime,
                         clip.AspectRatio,

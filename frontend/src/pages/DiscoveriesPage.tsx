@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, ShieldCheck, ExternalLink, Play, Filter, RefreshCw } from 'lucide-react';
+import { Sparkles, ShieldCheck, ExternalLink, Play, Filter, RefreshCw, UploadCloud, Clock } from 'lucide-react';
 import apiClient from '../api/client';
 import { SourceItem } from './SearchPage';
 import { RightsModal } from '../components/RightsModal';
+import { UploadMediaModal } from '../components/UploadMediaModal';
 
 export const DiscoveriesPage: React.FC = () => {
   const navigate = useNavigate();
@@ -11,6 +12,7 @@ export const DiscoveriesPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [filterRights, setFilterRights] = useState<string>('ALL');
   const [selectedSourceForRights, setSelectedSourceForRights] = useState<SourceItem | null>(null);
+  const [selectedSourceForUpload, setSelectedSourceForUpload] = useState<SourceItem | null>(null);
 
   const fetchSources = async () => {
     setLoading(true);
@@ -98,9 +100,16 @@ export const DiscoveriesPage: React.FC = () => {
             >
               <div className="space-y-2.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold px-2 py-0.5 rounded bg-slate-800 text-purple-400 border border-slate-700">
-                    {source.provider}
-                  </span>
+                  <div className="flex items-center space-x-1.5">
+                    <span className="font-semibold px-2 py-0.5 rounded bg-slate-800 text-purple-400 border border-slate-700">
+                      {source.provider}
+                    </span>
+                    {source.episode && (
+                      <span className="font-semibold px-2 py-0.5 rounded bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 text-[10px]">
+                        {source.episode}
+                      </span>
+                    )}
+                  </div>
                   {source.isAuthorizedForGeneration ? (
                     <span className="text-emerald-400 font-bold flex items-center space-x-1 text-[11px]">
                       <ShieldCheck className="w-3.5 h-3.5" />
@@ -120,9 +129,17 @@ export const DiscoveriesPage: React.FC = () => {
 
                 <div className="text-[11px] text-slate-400 pt-1 flex items-center justify-between">
                   <span>By {source.creator}</span>
-                  <span className="font-semibold text-purple-300">
-                    {Math.round(source.relevanceScore * 100)}% match
-                  </span>
+                  <div className="flex items-center space-x-2">
+                    {source.bestMomentTimestamp && (
+                      <span className="inline-flex items-center space-x-1 text-purple-300 font-medium bg-purple-950/40 px-1.5 py-0.5 rounded border border-purple-800/40 text-[10px]">
+                        <Clock className="w-2.5 h-2.5 text-purple-400" />
+                        <span>{source.bestMomentTimestamp}</span>
+                      </span>
+                    )}
+                    <span className="font-semibold text-emerald-400">
+                      {Math.round(source.relevanceScore * 100)}% match
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -138,26 +155,41 @@ export const DiscoveriesPage: React.FC = () => {
                 </a>
 
                 <div className="flex items-center space-x-2">
-                  {!source.isAuthorizedForGeneration && (
+                  {source.isAuthorizedForGeneration ? (
                     <button
-                      onClick={() => setSelectedSourceForRights(source)}
-                      className="px-2.5 py-1 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg font-medium"
+                      onClick={() => navigate(`/moments?sourceId=${source.id}`)}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-500 rounded-xl transition flex items-center space-x-1 shadow-md shadow-purple-900/30"
                     >
-                      Authorize
+                      <Sparkles className="w-3 h-3" />
+                      <span>Create Clip</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setSelectedSourceForUpload(source)}
+                      className="px-3 py-1.5 text-xs font-semibold text-amber-200 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 rounded-xl transition flex items-center space-x-1"
+                    >
+                      <UploadCloud className="w-3 h-3 text-amber-400" />
+                      <span>Create Clip (Upload Media)</span>
                     </button>
                   )}
-                  <button
-                    onClick={() => navigate(`/moments?sourceId=${source.id}`)}
-                    className="px-3 py-1.5 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-500 rounded-xl transition flex items-center space-x-1 shadow-md shadow-purple-900/30"
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    <span>Moments</span>
-                  </button>
                 </div>
               </div>
             </div>
           ))}
         </div>
+      )}
+
+      {selectedSourceForUpload && (
+        <UploadMediaModal
+          sourceId={selectedSourceForUpload.id}
+          sourceTitle={selectedSourceForUpload.title}
+          isOpen={!!selectedSourceForUpload}
+          onClose={() => setSelectedSourceForUpload(null)}
+          onAuthorized={() => {
+            fetchSources();
+            navigate(`/moments?sourceId=${selectedSourceForUpload.id}`);
+          }}
+        />
       )}
 
       {selectedSourceForRights && (

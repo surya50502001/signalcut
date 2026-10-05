@@ -10,10 +10,13 @@ import {
   Check,
   Play,
   RotateCw,
-  Lightbulb
+  Lightbulb,
+  AlertTriangle,
+  UploadCloud
 } from 'lucide-react';
 import apiClient from '../api/client';
 import { RightsModal } from '../components/RightsModal';
+import { UploadMediaModal } from '../components/UploadMediaModal';
 import { useAuth } from '../context/AuthContext';
 
 export interface MomentDto {
@@ -51,8 +54,9 @@ export const MomentsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Rights modal
+  // Rights & Upload modal
   const [showRightsModal, setShowRightsModal] = useState<boolean>(false);
+  const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
 
   const objectives = [
     'Educational',
@@ -115,7 +119,7 @@ export const MomentsPage: React.FC = () => {
   const handleCreateClip = async (moment: MomentDto) => {
     // Assert rights before navigating to editor
     if (source && !source.isAuthorizedForGeneration) {
-      setShowRightsModal(true);
+      setShowUploadModal(true);
       return;
     }
 
@@ -133,7 +137,7 @@ export const MomentsPage: React.FC = () => {
       }
     } catch (err: any) {
       if (err.response?.data?.error?.code === 'UNAUTHORIZED_MEDIA') {
-        setShowRightsModal(true);
+        setShowUploadModal(true);
       } else {
         setError(err.response?.data?.error?.message || 'Failed to create clip.');
       }
@@ -193,6 +197,28 @@ export const MomentsPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Discovery-Only Mandatory Banner */}
+      {source && !source.isAuthorizedForGeneration && (
+        <div className="bg-amber-950/25 border border-amber-900/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
+          <div className="flex items-start space-x-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-amber-200">Discovery-Only Source</div>
+              <p className="text-amber-300/90 leading-relaxed mt-0.5">
+                This source is available for discovery, but SignalCut does not have an authorized way to retrieve the media. Upload the video/audio you have permission to use to continue.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowUploadModal(true)}
+            className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-xl font-semibold shrink-0 transition flex items-center space-x-1.5"
+          >
+            <UploadCloud className="w-4 h-4 text-amber-400" />
+            <span>Upload Media</span>
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="p-4 bg-rose-950/30 border border-rose-900/50 rounded-2xl text-rose-300 text-xs flex items-center justify-between">
@@ -294,7 +320,20 @@ export const MomentsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Rights Modal */}
+      {/* Upload Media Modal for Discovery-Only Sources */}
+      {source && (
+        <UploadMediaModal
+          sourceId={source.id}
+          sourceTitle={source.title}
+          isOpen={showUploadModal}
+          onClose={() => setShowUploadModal(false)}
+          onAuthorized={() => {
+            fetchMoments();
+          }}
+        />
+      )}
+
+      {/* Legacy Rights Modal */}
       {source && (
         <RightsModal
           sourceId={source.id}

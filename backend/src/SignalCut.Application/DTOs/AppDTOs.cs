@@ -36,19 +36,32 @@ public record SourceDto(
     AuthorizationStatus AuthorizationStatus,
     bool TranscriptAvailability,
     bool IsAuthorizedForGeneration,
-    double RelevanceScore
+    double RelevanceScore,
+    string? BestMomentTimestamp = null,
+    string? Episode = null
 );
 
 // --- RIGHTS CONFIRMATION DTO (CRITICAL) ---
 public record RightsConfirmationRequest(
     Guid SourceId,
     RightsStatus ClaimedRightsStatus, // USER_OWNED, USER_AUTHORIZED, LICENSED, PUBLIC_DOMAIN
-    string ConfirmationStatement, // "I confirm that I own or have permission to use this content."
-    string? ProofDocumentUrl
+    string ConfirmationStatement, // "I confirm that I own this content or have permission to use, edit, and publish it."
+    string? ProofDocumentUrl = null
 );
 public record RightsConfirmationResponse(
     bool Success,
     Guid SourceId,
+    RightsStatus RightsStatus,
+    AuthorizationStatus AuthorizationStatus,
+    DateTime ConfirmedAt,
+    string Message
+);
+
+public record UploadMediaResultDto(
+    bool Success,
+    Guid SourceId,
+    Guid MediaAssetId,
+    string StorageUrl,
     RightsStatus RightsStatus,
     AuthorizationStatus AuthorizationStatus,
     DateTime ConfirmedAt,

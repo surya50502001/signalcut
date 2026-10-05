@@ -10,7 +10,8 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -81,11 +82,101 @@ def validate_safe_remote_url(url: str) -> None:
     except socket.gaierror as e:
         raise HTTPException(status_code=400, detail=f"Host resolution failed for '{hostname}': {str(e)}")
 
+def validate_authorized_media_input(url_or_path: str) -> None:
+    if not url_or_path or not url_or_path.strip():
+        raise HTTPException(status_code=400, detail="Media URL or file path cannot be empty.")
+
+    target = url_or_path.strip()
+
+    # 1. Local file path check
+    if os.path.exists(target):
+        return
+
+    # Check relative path in backend wwwroot
+    base_storage = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "src", "SignalCut.API", "wwwroot"))
+    relative_candidate = os.path.join(base_storage, target.lstrip("/\\"))
+    if os.path.exists(relative_candidate):
+        return
+
+    # 2. Remote URL check: Only SignalCut-controlled storage is permitted.
+    if target.startswith("http://") or target.startswith("https://"):
+        # Explicitly reject known public video hosts / third-party arbitrary urls
+        blocked_platforms = [
+            "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com",
+            "twitch.tv", "tiktok.com", "instagram.com", "twitter.com", "x.com"
+        ]
+        lower_url = target.lower()
+        for bp in blocked_platforms:
+            if bp in lower_url:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Arbitrary third-party media URLs (e.g. {bp}) are not permitted. Real media must be uploaded to SignalCut storage."
+                )
+
+        storage_prefix = os.environ.get("STORAGE_URL_PREFIX")
+        if storage_prefix:
+            if not target.startswith(storage_prefix):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Arbitrary remote media URLs are not permitted. Only media from SignalCut-controlled storage ({storage_prefix}) is authorized."
+                )
+        else:
+            # Default allowed storage prefixes when STORAGE_URL_PREFIX is not explicitly set
+            allowed_prefixes = (
+                "http://localhost:5000/storage/",
+                "http://localhost:5000/media/",
+                "https://storage.signalcut.com/",
+                "http://127.0.0.1:5000/storage/",
+                "http://127.0.0.1:5000/media/",
+            )
+            if not any(target.startswith(p) for p in allowed_prefixes):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Arbitrary remote media URLs are not permitted. Only local files or SignalCut-controlled storage media are authorized."
+                )
+
+        validate_safe_remote_url(target)
+        return
+
+    # Non-existent local file or unrecognized path
+    raise HTTPException(
+        status_code=422,
+        detail=f"Source media file not found or could not be sliced: {target}. Real media acquisition is required."
+    )
+
 app = FastAPI(
     title="SignalCut AI & Media Processing Worker",
     version="1.0.0",
     description="Microservice for real media transcription, topic discovery, Gemini AI moment detection, and FFmpeg 9:16 vertical rendering."
 )
+
+@app.middleware("http")
+async def verify_api_key_middleware(request: Request, call_next):
+    # Allow health check and CORS preflight OPTIONS without auth
+    if request.url.path == "/health" or request.method == "OPTIONS":
+        return await call_next(request)
+
+    api_key_header = request.headers.get("X-API-Key")
+    auth_header = request.headers.get("Authorization")
+
+    token = None
+    if api_key_header:
+        token = api_key_header.strip()
+    elif auth_header:
+        parts = auth_header.strip().split(" ")
+        if len(parts) == 2 and parts[0].lower() in ("bearer", "apikey"):
+            token = parts[1]
+        else:
+            token = auth_header.strip()
+
+    expected_key = os.environ.get("AI_WORKER_API_KEY", "dev_ai_worker_internal_secret_key_2025")
+    if not token or token != expected_key:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized: Invalid or missing AI Worker API key."}
+        )
+
+    return await call_next(request)
 
 # CORS: Configurable origins, avoiding wildcard in production
 raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
@@ -285,41 +376,62 @@ def search_youtube(query: str = Query(..., min_length=1), limit: int = Query(15,
 @app.post("/api/v1/transcription", response_model=TranscriptionResponse)
 def transcribe_media(req: TranscriptionRequest):
     """
-    Extracts real transcripts and timestamps from media files or YouTube captions.
+    Extracts real transcripts and timestamps from authorized media files in SignalCut storage.
     Fails cleanly if no real transcript or captions are available.
+    Arbitrary remote media URLs are strictly rejected.
     """
-    import yt_dlp
+    validate_authorized_media_input(req.sourceUrl)
 
     chunks: List[TranscriptChunkItem] = []
     full_text = ""
     is_auto = True
     provider_name = "Whisper"
 
-    # 1. If req.sourceUrl is an authorized local media file (user uploaded media)
+    local_media_path = None
+    temp_dir_to_clean = None
+
     if os.path.exists(req.sourceUrl):
-        gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("AI_API_KEY")
-        if gemini_key:
+        local_media_path = req.sourceUrl
+    else:
+        base_storage = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "src", "SignalCut.API", "wwwroot"))
+        relative_candidate = os.path.join(base_storage, req.sourceUrl.lstrip("/\\"))
+        if os.path.exists(relative_candidate):
+            local_media_path = relative_candidate
+        elif req.sourceUrl.startswith("http://") or req.sourceUrl.startswith("https://"):
+            temp_dir_to_clean = tempfile.TemporaryDirectory()
+            local_media_path = os.path.join(temp_dir_to_clean.name, "downloaded_media.mp4")
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                provider_name = "Google-Gemini-Flash"
+                urllib.request.urlretrieve(req.sourceUrl, local_media_path)
+            except Exception as dl_err:
+                if temp_dir_to_clean:
+                    temp_dir_to_clean.cleanup()
+                raise HTTPException(status_code=422, detail=f"Failed to retrieve media from authorized storage: {dl_err}")
 
-                # Extract audio track to lightweight mp3 for fast upload
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    audio_path = os.path.join(tmp_dir, "extracted_audio.mp3")
-                    cmd_audio = [
-                        FFMPEG_BIN, "-y",
-                        "-i", req.sourceUrl,
-                        "-vn", "-acodec", "libmp3lame", "-q:a", "4",
-                        audio_path
-                    ]
-                    subprocess.run(cmd_audio, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        if local_media_path and os.path.exists(local_media_path):
+            gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("AI_API_KEY")
+            if gemini_key:
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=gemini_key)
+                    provider_name = "Google-Gemini-Flash"
 
-                    audio_upload = genai.upload_file(path=audio_path)
-                    gemini_model_name = os.getenv("AI_MODEL") or "gemini-3.8-flash"
-                    model = genai.GenerativeModel(gemini_model_name)
+                    # Extract audio track to lightweight mp3 for fast upload
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        audio_path = os.path.join(tmp_dir, "extracted_audio.mp3")
+                        cmd_audio = [
+                            FFMPEG_BIN, "-y",
+                            "-i", local_media_path,
+                            "-vn", "-acodec", "libmp3lame", "-q:a", "4",
+                            audio_path
+                        ]
+                        subprocess.run(cmd_audio, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-                    prompt = """Transcribe this audio file accurately. 
+                        audio_upload = genai.upload_file(path=audio_path)
+                        gemini_model_name = os.getenv("AI_MODEL") or "gemini-3.8-flash"
+                        model = genai.GenerativeModel(gemini_model_name)
+
+                        prompt = """Transcribe this audio file accurately. 
 Group sentences into natural 10-25 second chunks.
 Return ONLY valid JSON matching this schema:
 [
@@ -332,107 +444,23 @@ Return ONLY valid JSON matching this schema:
     "confidence": 0.98
   }
 ]"""
-                    resp = model.generate_content([prompt, audio_upload])
-                    resp_text = resp.text.strip().removeprefix("```json").removesuffix("```").strip()
-                    parsed = json.loads(resp_text)
-                    for item in parsed:
-                        chunks.append(TranscriptChunkItem(**item))
-                    full_text = " ".join(c.text for c in chunks)
-            except Exception as gemini_ex:
-                print(f"Gemini local transcription failed: {gemini_ex}", file=sys.stderr)
+                        resp = model.generate_content([prompt, audio_upload])
+                        resp_text = resp.text.strip().removeprefix("```json").removesuffix("```").strip()
+                        parsed = json.loads(resp_text)
+                        for item in parsed:
+                            chunks.append(TranscriptChunkItem(**item))
+                        full_text = " ".join(c.text for c in chunks)
+                except Exception as gemini_ex:
+                    print(f"Gemini local transcription failed: {gemini_ex}", file=sys.stderr)
 
         if not chunks:
             raise HTTPException(
                 status_code=422,
                 detail="No transcript or captions available for this media source. Real media transcript or caption data is required."
             )
-
-    # 2. Remote URL: Extract official or auto-generated subtitle tracks (instant & precise)
-    elif req.sourceUrl.startswith("http://") or req.sourceUrl.startswith("https://"):
-        validate_safe_remote_url(req.sourceUrl)
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'skip_download': True,
-                'writesubtitles': True,
-                'writeautomaticsub': True,
-                'no_warnings': True
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(req.sourceUrl, download=False)
-                if info:
-                    subs = info.get("subtitles", {})
-                    auto_subs = info.get("automatic_captions", {})
-
-                    lang = req.language or "en"
-                    track_list = subs.get(lang) or subs.get("en") or auto_subs.get(lang) or auto_subs.get("en") or []
-
-                    json3_url = next((s["url"] for s in track_list if s.get("ext") == "json3"), None)
-                    if not json3_url and track_list:
-                        json3_url = track_list[0].get("url")
-
-                    if json3_url:
-                        validate_safe_remote_url(json3_url)
-                        http_req = urllib.request.Request(json3_url, headers={"User-Agent": "Mozilla/5.0"})
-                        with urllib.request.urlopen(http_req, timeout=15) as resp:
-                            sub_data = json.loads(resp.read().decode("utf-8"))
-                            events = sub_data.get("events", [])
-                            
-                            chunk_idx = 0
-                            sentence_accumulator = []
-                            sentence_start = 0.0
-                            sentence_end = 0.0
-
-                            for ev in events:
-                                if "segs" not in ev:
-                                    continue
-                                start_ms = ev.get("tStartMs", 0)
-                                dur_ms = ev.get("dDurationMs", 0)
-                                seg_text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
-                                if not seg_text or seg_text == "\n":
-                                    continue
-
-                                if not sentence_accumulator:
-                                    sentence_start = start_ms / 1000.0
-
-                                sentence_accumulator.append(seg_text)
-                                sentence_end = (start_ms + dur_ms) / 1000.0
-
-                                accumulated_str = " ".join(sentence_accumulator)
-                                if (sentence_end - sentence_start) >= 12.0 or accumulated_str.endswith((".", "!", "?")):
-                                    chunks.append(TranscriptChunkItem(
-                                        chunkIndex=chunk_idx,
-                                        startTime=round(sentence_start, 2),
-                                        endTime=round(sentence_end, 2),
-                                        text=accumulated_str,
-                                        speaker=f"Speaker {(chunk_idx % 2) + 1}",
-                                        confidence=0.98
-                                    ))
-                                    chunk_idx += 1
-                                    sentence_accumulator = []
-
-                            if sentence_accumulator:
-                                chunks.append(TranscriptChunkItem(
-                                    chunkIndex=chunk_idx,
-                                    startTime=round(sentence_start, 2),
-                                    endTime=round(sentence_end, 2),
-                                    text=" ".join(sentence_accumulator),
-                                    speaker="Speaker 1",
-                                    confidence=0.98
-                                ))
-
-                            full_text = " ".join(c.text for c in chunks)
-                            provider_name = "YouTube-Captions"
-        except Exception as ex:
-            print(f"Subtitle extraction notice: {ex}", file=sys.stderr)
-
-        if not chunks:
-            raise HTTPException(
-                status_code=422,
-                detail="No transcript or captions available for this media source. Real media transcript or caption data is required."
-            )
-    else:
-        raise HTTPException(status_code=400, detail=f"Invalid media path or URL: {req.sourceUrl}")
+    finally:
+        if temp_dir_to_clean:
+            temp_dir_to_clean.cleanup()
 
     words = full_text.split()
     return TranscriptionResponse(
@@ -609,25 +637,8 @@ def render_video_clip(req: RenderClipRequest):
     Renders genuine 9:16 vertical short-form video from authorized media using FFmpeg.
     External video scraping/downloading (e.g. YouTube) is blocked.
     """
-    # 1. Block unauthorized external video platforms
-    blocked_platforms = ["youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "twitch.tv"]
-    url_lower = req.sourceVideoUrl.lower()
-    for bp in blocked_platforms:
-        if bp in url_lower:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Direct rendering from external video platforms is not permitted (blocked: '{bp}'). An authorized media file must be uploaded."
-            )
-
-    # Validate remote URLs against SSRF and optional signed storage prefix
-    if req.sourceVideoUrl.startswith("http://") or req.sourceVideoUrl.startswith("https://"):
-        storage_prefix = os.environ.get("STORAGE_URL_PREFIX")
-        if storage_prefix and not req.sourceVideoUrl.startswith(storage_prefix):
-            raise HTTPException(
-                status_code=403,
-                detail="Remote media URLs must match the configured approved signed storage prefix."
-            )
-        validate_safe_remote_url(req.sourceVideoUrl)
+    # Validate that sourceVideoUrl is authorized (local file or SignalCut-controlled storage)
+    validate_authorized_media_input(req.sourceVideoUrl)
 
     duration = max(1.0, req.endTime - req.startTime)
     output_filename = f"clip_{req.clipId}_{int(time.time())}.mp4"

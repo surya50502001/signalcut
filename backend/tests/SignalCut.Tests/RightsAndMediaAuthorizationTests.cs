@@ -555,6 +555,108 @@ public class RightsAndMediaAuthorizationTests
         await act.Should().ThrowAsync<UnauthorizedMediaException>();
     }
 
+    [Fact]
+    public async Task LicensedSource_WithoutMediaAsset_CannotDetectMomentsOrGenerateClips()
+    {
+        // Arrange: Discovered licensed source with external URL, but NO uploaded MediaAsset
+        using var context = CreateInMemoryDbContext();
+        var rightsService = new RightsAuthorizationService(context, NullLogger<RightsAuthorizationService>.Instance);
+        var walletService = new CreditWalletService(context, NullLogger<CreditWalletService>.Instance);
+        var transcriptProvider = new TestTranscriptProvider(null);
+        var llmProvider = new TestLanguageModelProvider();
+        var momentService = new MomentService(context, llmProvider, transcriptProvider, walletService, rightsService, NullLogger<MomentService>.Instance);
+        var clipService = new ClipService(context, rightsService, walletService, new TestVideoProcessor(), NullLogger<ClipService>.Instance);
+
+        var orgId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        await walletService.AddCreditsAsync(orgId, 100m, CreditTransactionType.PURCHASE, null, "Initial balance", null);
+
+        var licensedSource = new Source
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Provider = "PodcastNetwork",
+            Title = "Licensed Podcast Episode",
+            Url = "https://licensed.network.com/audio/ep1.mp3",
+            RightsStatus = RightsStatus.LICENSED,
+            AuthorizationStatus = AuthorizationStatus.VERIFIED
+        };
+        context.Sources.Add(licensedSource);
+        await context.SaveChangesAsync();
+
+        // Act & Assert 1: Moment detection must throw UnauthorizedMediaException
+        var momentAct = async () => await momentService.DetectMomentsAsync(orgId, userId, licensedSource.Id, MomentObjective.Educational);
+        var ex1 = await momentAct.Should().ThrowAsync<UnauthorizedMediaException>();
+        ex1.Which.SourceId.Should().Be(licensedSource.Id);
+
+        // Act & Assert 2: Clip creation must also throw UnauthorizedMediaException
+        var moment = new Moment
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            SourceId = licensedSource.Id,
+            StartTime = 0,
+            EndTime = 20,
+            TranscriptSnippet = "Licensed quote"
+        };
+        context.Moments.Add(moment);
+        await context.SaveChangesAsync();
+
+        var clipAct = async () => await clipService.CreateClipFromMomentAsync(orgId, userId, new CreateClipRequest(moment.Id, null, 0, 20));
+        await clipAct.Should().ThrowAsync<UnauthorizedMediaException>();
+    }
+
+    [Fact]
+    public async Task PublicDomainSource_WithoutMediaAsset_CannotDetectMomentsOrGenerateClips()
+    {
+        // Arrange: Public domain source with external URL, but NO uploaded MediaAsset
+        using var context = CreateInMemoryDbContext();
+        var rightsService = new RightsAuthorizationService(context, NullLogger<RightsAuthorizationService>.Instance);
+        var walletService = new CreditWalletService(context, NullLogger<CreditWalletService>.Instance);
+        var transcriptProvider = new TestTranscriptProvider(null);
+        var llmProvider = new TestLanguageModelProvider();
+        var momentService = new MomentService(context, llmProvider, transcriptProvider, walletService, rightsService, NullLogger<MomentService>.Instance);
+        var clipService = new ClipService(context, rightsService, walletService, new TestVideoProcessor(), NullLogger<ClipService>.Instance);
+
+        var orgId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        await walletService.AddCreditsAsync(orgId, 100m, CreditTransactionType.PURCHASE, null, "Initial balance", null);
+
+        var pdSource = new Source
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Provider = "ArchiveOrg",
+            Title = "Historical Speech",
+            Url = "https://archive.org/details/historical_speech.mp4",
+            RightsStatus = RightsStatus.PUBLIC_DOMAIN,
+            AuthorizationStatus = AuthorizationStatus.VERIFIED
+        };
+        context.Sources.Add(pdSource);
+        await context.SaveChangesAsync();
+
+        // Act & Assert: Moment detection must throw UnauthorizedMediaException
+        var momentAct = async () => await momentService.DetectMomentsAsync(orgId, userId, pdSource.Id, MomentObjective.Educational);
+        var ex = await momentAct.Should().ThrowAsync<UnauthorizedMediaException>();
+        ex.Which.SourceId.Should().Be(pdSource.Id);
+
+        // Act & Assert: Clip creation must also throw UnauthorizedMediaException
+        var moment = new Moment
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            SourceId = pdSource.Id,
+            StartTime = 0,
+            EndTime = 15,
+            TranscriptSnippet = "Historical speech snippet"
+        };
+        context.Moments.Add(moment);
+        await context.SaveChangesAsync();
+
+        var clipAct = async () => await clipService.CreateClipFromMomentAsync(orgId, userId, new CreateClipRequest(moment.Id, null, 0, 15));
+        await clipAct.Should().ThrowAsync<UnauthorizedMediaException>();
+    }
+
     // --- Test Stubs ---
     private class TestObjectStorage : IObjectStorage
     {

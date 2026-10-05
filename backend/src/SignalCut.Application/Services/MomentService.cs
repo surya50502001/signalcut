@@ -70,13 +70,19 @@ public class MomentService : IMomentService
             }
             else
             {
-                // Resolve authorized media target
+                // Resolve authorized media target - strictly requires MediaAsset
                 var mediaAsset = await _context.MediaAssets
                     .Where(m => m.SourceId == source.Id)
                     .OrderByDescending(m => m.CreatedAt)
                     .FirstOrDefaultAsync(ct);
 
-                var targetMediaUrl = mediaAsset?.StorageUrl ?? source.Url;
+                if (mediaAsset == null || string.IsNullOrWhiteSpace(mediaAsset.StorageUrl))
+                {
+                    throw new UnauthorizedMediaException(source.Id,
+                        "Cannot detect moments: An authorized media file must be uploaded before moment analysis. External URLs are for discovery only.");
+                }
+
+                var targetMediaUrl = mediaAsset.StorageUrl;
                 if (!string.IsNullOrEmpty(targetMediaUrl) && targetMediaUrl.StartsWith("/storage/"))
                 {
                     var relative = targetMediaUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);

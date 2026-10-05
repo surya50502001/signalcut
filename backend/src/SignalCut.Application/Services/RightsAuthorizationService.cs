@@ -72,13 +72,11 @@ public class RightsAuthorizationService : IRightsAuthorizationService
         }
 
         var hasUploadedMedia = source.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
-        var isLicensedDirect = (request.ClaimedRightsStatus == RightsStatus.LICENSED || request.ClaimedRightsStatus == RightsStatus.PUBLIC_DOMAIN)
-                               && !string.IsNullOrEmpty(request.ProofDocumentUrl)
-                               && source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
 
-        // A source must have an actual uploaded MediaAsset (file physically stored) or be a
-        // verified LICENSED/PUBLIC_DOMAIN source. Provider label alone is NOT sufficient.
-        bool canDirectlyAuthorize = hasUploadedMedia || isLicensedDirect;
+        // A source MUST have an actual uploaded MediaAsset before it can be directly authorized for media generation.
+        // Even for LICENSED or PUBLIC_DOMAIN sources, SignalCut does not download or process external streaming URLs;
+        // the user must upload the media they have authorization to use.
+        bool canDirectlyAuthorize = hasUploadedMedia;
 
         source.RightsConfirmedByUserId = userId;
         source.RightsConfirmationTimestamp = DateTime.UtcNow;
@@ -151,20 +149,19 @@ public class RightsAuthorizationService : IRightsAuthorizationService
         }
 
         var hasUploadedMedia = source.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
-        var isVerifiedLicensed = (source.RightsStatus == RightsStatus.LICENSED || source.RightsStatus == RightsStatus.PUBLIC_DOMAIN)
-                                 && source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
 
-        // hasAuthorizedMediaAccess requires an ACTUAL uploaded MediaAsset or verified LICENSED/PUBLIC_DOMAIN.
-        // Provider label or ContentType alone does NOT grant media access.
-        var hasAuthorizedMediaAccess = hasUploadedMedia || isVerifiedLicensed;
+        // Media generation pipeline strictly requires an ACTUAL uploaded MediaAsset.
+        // LICENSED, PUBLIC_DOMAIN, and USER_OWNED sources still require uploaded media.
+        // External URLs are strictly discovery/reference metadata and are never processed directly.
+        var hasAuthorizedMediaAccess = hasUploadedMedia;
 
         if (!hasAuthorizedMediaAccess || source.RightsStatus == RightsStatus.DISCOVERY_ONLY || source.RightsStatus == RightsStatus.BLOCKED || source.RightsStatus == RightsStatus.UNKNOWN)
         {
-            _logger.LogWarning("Access denied to media generation pipeline for Source {SourceId}. External source has no authorized media access. RightsStatus: {Status}, HasMedia: {HasMedia}",
+            _logger.LogWarning("Access denied to media generation pipeline for Source {SourceId}. Source has no authorized uploaded media asset. RightsStatus: {Status}, HasMedia: {HasMedia}",
                 sourceId, source.RightsStatus, hasUploadedMedia);
 
             throw new UnauthorizedMediaException(sourceId,
-                "This source is available for discovery, but SignalCut does not have an authorized way to retrieve the media. Upload the video/audio you have permission to use to continue.");
+                "This source is available for discovery, but SignalCut does not process external URLs directly. Upload the video/audio you have permission to use to continue.");
         }
 
         bool isAuthorized = source.RightsStatus switch

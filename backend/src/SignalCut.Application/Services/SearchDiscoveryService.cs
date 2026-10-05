@@ -213,9 +213,9 @@ public class SearchDiscoveryService : ISearchDiscoveryService
         }
 
         var hasUploadedMedia = s.MediaAssets != null && s.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
-        var isLicensedDirect = (s.RightsStatus == RightsStatus.LICENSED || s.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && s.AuthorizationStatus == AuthorizationStatus.VERIFIED;
 
-        var hasAuthorizedMedia = hasUploadedMedia || isLicensedDirect;
+        // External URLs are strictly discovery/reference metadata. Media generation requires uploaded media.
+        var hasAuthorizedMedia = hasUploadedMedia;
         if (!hasAuthorizedMedia) return false;
 
         return s.RightsStatus switch

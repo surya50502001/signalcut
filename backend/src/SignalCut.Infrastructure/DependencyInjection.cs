@@ -12,6 +12,7 @@ using SignalCut.Infrastructure.Providers.Storage;
 using SignalCut.Infrastructure.Providers.Transcription;
 using SignalCut.Infrastructure.Providers.Video;
 using SignalCut.Infrastructure.Security;
+using SignalCut.Infrastructure.Services;
 
 namespace SignalCut.Infrastructure;
 
@@ -88,7 +89,11 @@ public static class DependencyInjection
         services.AddScoped<IAdminService, AnalyticsAndAdminService>();
         services.AddScoped<IAnalyticsService, AnalyticsAndAdminService>();
 
-        // 12. Startup Job Reconciliation
+        // 12. Durable Render Queue & Background Service
+        services.AddSingleton<IRenderJobQueue, ChannelRenderJobQueue>();
+        services.AddHostedService<RenderJobBackgroundService>();
+
+        // 13. Startup Job Reconciliation
         services.AddHostedService<StartupJobReconciliationService>();
 
         return services;

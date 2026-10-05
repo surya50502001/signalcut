@@ -17,6 +17,7 @@ public class ClipService : IClipService
     private readonly IVideoProcessor _videoProcessor;
     private readonly ILogger<ClipService> _logger;
     private readonly IServiceScopeFactory? _scopeFactory;
+    private readonly IRenderJobQueue? _renderQueue;
 
     public ClipService(
         IApplicationDbContext context,
@@ -24,7 +25,8 @@ public class ClipService : IClipService
         ICreditWalletService creditWalletService,
         IVideoProcessor videoProcessor,
         ILogger<ClipService> logger,
-        IServiceScopeFactory? scopeFactory = null)
+        IServiceScopeFactory? scopeFactory = null,
+        IRenderJobQueue? renderQueue = null)
     {
         _context = context;
         _rightsAuthService = rightsAuthService;
@@ -32,6 +34,7 @@ public class ClipService : IClipService
         _videoProcessor = videoProcessor;
         _logger = logger;
         _scopeFactory = scopeFactory;
+        _renderQueue = renderQueue;
     }
 
 
@@ -48,6 +51,16 @@ public class ClipService : IClipService
 
         // 1. CRITICAL: Assert rights before entering clip creation pipeline
         await _rightsAuthService.AssertCanEnterGenerationPipelineAsync(moment.SourceId, ct);
+
+        // 2. Strictly require an actual uploaded MediaAsset for clip creation
+        var hasMediaAsset = await _context.MediaAssets
+            .AnyAsync(m => m.SourceId == moment.SourceId && (!string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey)), ct);
+
+        if (!hasMediaAsset)
+        {
+            throw new UnauthorizedMediaException(moment.SourceId,
+                "Cannot create clip: An authorized media file must be uploaded before creating clips.");
+        }
 
         var startTime = request.StartTime ?? moment.StartTime;
         var endTime = request.EndTime ?? moment.EndTime;
@@ -226,9 +239,16 @@ public class ClipService : IClipService
         clip.RenderStatus = JobStatus.QUEUED;
         await _context.SaveChangesAsync(ct);
 
-        // 5. Trigger asynchronous background render execution with isolated DI scope
-        _ = Task.Run(async () =>
+        // 5. Enqueue render job for durable background processing
+        if (_renderQueue != null)
         {
+            await _renderQueue.EnqueueAsync(new RenderJobQueueItem(organizationId, jobId, clipId, requiredCredits), ct);
+        }
+        else
+        {
+            // Direct asynchronous fallback for isolated test runs without DI background queue
+            _ = Task.Run(async () =>
+            {
             if (_scopeFactory != null)
             {
                 using var scope = _scopeFactory.CreateScope();
@@ -444,7 +464,8 @@ public class ClipService : IClipService
                     await _creditWalletService.RefundReservedCreditsAsync(organizationId, jobId, $"Render failure: {ex.Message}");
                 }
             }
-        });
+            });
+        }
 
         return new JobDto(
             job.Id,

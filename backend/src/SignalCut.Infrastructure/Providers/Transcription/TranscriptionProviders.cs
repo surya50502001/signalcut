@@ -36,7 +36,17 @@ public class TranscriptProvider : ITranscriptProvider
                 detectSpeakers = true
             };
 
-            var resp = await _httpClient.PostAsJsonAsync($"{workerUrl}/api/v1/transcription", reqObj, ct);
+            using var reqMsg = new HttpRequestMessage(HttpMethod.Post, $"{workerUrl}/api/v1/transcription")
+            {
+                Content = JsonContent.Create(reqObj)
+            };
+            var apiKey = _config["AI_WORKER_API_KEY"];
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                reqMsg.Headers.Add("X-API-Key", apiKey);
+            }
+
+            var resp = await _httpClient.SendAsync(reqMsg, ct);
             if (resp.IsSuccessStatusCode)
             {
                 var data = await resp.Content.ReadFromJsonAsync<WorkerTranscriptionResponseDto>(cancellationToken: ct);

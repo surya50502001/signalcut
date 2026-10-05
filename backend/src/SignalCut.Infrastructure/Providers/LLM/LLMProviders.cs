@@ -44,7 +44,17 @@ public class CompositeLanguageModelProvider : ILanguageModelProvider
                 objective = objective.ToString()
             };
 
-            var workerResp = await _httpClient.PostAsJsonAsync($"{workerUrl}/api/v1/moments", reqObj, ct);
+            using var reqMsg = new HttpRequestMessage(HttpMethod.Post, $"{workerUrl}/api/v1/moments")
+            {
+                Content = JsonContent.Create(reqObj)
+            };
+            var apiKey = _config["AI_WORKER_API_KEY"];
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                reqMsg.Headers.Add("X-API-Key", apiKey);
+            }
+
+            var workerResp = await _httpClient.SendAsync(reqMsg, ct);
             if (workerResp.IsSuccessStatusCode)
             {
                 var workerMoments = await workerResp.Content.ReadFromJsonAsync<List<WorkerMomentItemDto>>(cancellationToken: ct);

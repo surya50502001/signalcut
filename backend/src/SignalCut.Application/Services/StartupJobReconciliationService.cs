@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -26,8 +26,9 @@ public class StartupJobReconciliationService : IHostedService
             var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
             var walletService = scope.ServiceProvider.GetService<ICreditWalletService>();
 
+            // Reconcile jobs that were actively running (PROCESSING) when the server terminated
             var staleJobs = await context.Jobs
-                .Where(j => j.Status == JobStatus.QUEUED || j.Status == JobStatus.PROCESSING)
+                .Where(j => j.Status == JobStatus.PROCESSING)
                 .ToListAsync(cancellationToken);
 
             if (staleJobs.Count > 0)

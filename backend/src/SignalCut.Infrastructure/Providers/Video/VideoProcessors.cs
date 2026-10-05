@@ -32,7 +32,17 @@ public class CompositeVideoProcessor : IVideoProcessor
 
         try
         {
-            var response = await _httpClient.PostAsJsonAsync($"{workerUrl}/api/v1/render", request, ct);
+            using var reqMsg = new HttpRequestMessage(HttpMethod.Post, $"{workerUrl}/api/v1/render")
+            {
+                Content = JsonContent.Create(request)
+            };
+            var apiKey = _config["AI_WORKER_API_KEY"];
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                reqMsg.Headers.Add("X-API-Key", apiKey);
+            }
+
+            var response = await _httpClient.SendAsync(reqMsg, ct);
             if (response.IsSuccessStatusCode)
             {
                 var result = await response.Content.ReadFromJsonAsync<RenderVideoResult>(cancellationToken: ct);
@@ -45,7 +55,7 @@ public class CompositeVideoProcessor : IVideoProcessor
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "FastAPI AI worker render request failed or unreachable; running local FFmpeg fallback rendering.");
+            _logger.LogWarning(ex, "FastAPI AI worker render request failed or unreachable; running local FFmpeg rendering.");
         }
 
         // Direct local rendering fallback
@@ -64,20 +74,31 @@ public class CompositeVideoProcessor : IVideoProcessor
 
         onProgress?.Invoke(70);
 
+        if (!File.Exists(request.SourceVideoUrl))
+        {
+            return new RenderVideoResult(
+                Success: false,
+                StorageKey: "",
+                StorageUrl: "",
+                ThumbnailUrl: null,
+                DurationSeconds: 0,
+                ErrorMessage: $"Local media source not found at '{request.SourceVideoUrl}'. Real media acquisition is required."
+            );
+        }
+
         // Check if FFmpeg is executable on host
         bool ffmpegSuccess = false;
         try
         {
-            // Build synthetic vertical 9:16 sample video with color bars and branding text using FFmpeg testsrc
-            // This tests that FFmpeg actually executes and produces a real mp4 video file!
             var watermarkText = request.HasWatermark ? "drawtext=text='SignalCut Free':fontcolor=white@0.7:fontsize=36:x=w-tw-40:y=40," : "";
             var escapedHook = request.Captions.FirstOrDefault()?.Text?.Replace("'", "\\'") ?? "SignalCut High-Signal Clip";
             if (escapedHook.Length > 40) escapedHook = escapedHook[..37] + "...";
 
-            var ffmpegArgs = $"-y -f lavfi -i testsrc=size=1080x1920:rate=30 -f lavfi -i sine=frequency=440:beep_factor=4:sample_rate=44100 " +
-                             $"-vf \"{watermarkText}drawbox=y=ih-120:color={request.HighlightColorHex}@1:width=iw:height=16:t=fill," +
+            var ffmpegArgs = $"-y -ss {request.StartTime} -to {request.EndTime} -i \"{request.SourceVideoUrl}\" " +
+                             $"-vf \"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2," +
+                             $"{watermarkText}drawbox=y=ih-120:color={request.HighlightColorHex}@1:width=iw:height=16:t=fill," +
                              $"drawtext=text='{escapedHook}':fontcolor={request.PrimaryColorHex}:fontsize=48:x=(w-tw)/2:y=(h-th)/2\" " +
-                             $"-t {Math.Min(10, Math.Ceiling(duration))} -c:v libx264 -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+                             $"-t {Math.Min(60, Math.Ceiling(duration))} -c:v libx264 -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
 
             var psi = new ProcessStartInfo
             {
@@ -107,7 +128,7 @@ public class CompositeVideoProcessor : IVideoProcessor
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Direct FFmpeg execution failed; generating simulated video asset.");
+            _logger.LogWarning(ex, "Direct FFmpeg execution failed.");
         }
 
         if (!ffmpegSuccess)

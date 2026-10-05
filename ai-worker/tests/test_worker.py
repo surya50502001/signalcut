@@ -9,24 +9,68 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from main import app, FFMPEG_BIN
 
 client = TestClient(app)
+client.headers.update({"X-API-Key": "dev_ai_worker_internal_secret_key_2025"})
 
 def test_health_check():
-    response = client.get("/health")
+    # Health check must be publicly accessible without authentication
+    unauth_client = TestClient(app)
+    response = unauth_client.get("/health")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "Healthy"
     assert "ffmpegInstalled" in data
 
-def test_unauthorized_transcription_fails_cleanly_without_mock():
-    # Attempting to transcribe an uncaptioned or invalid media URL must fail cleanly with 422
-    response = client.post("/api/v1/transcription", json={
-        "sourceUrl": "https://example.com/unauthorized_audio.mp3",
-        "language": "en"
-    })
-    assert response.status_code == 422
-    data = response.json()
-    assert "detail" in data
-    assert "Real media transcript or caption data is required" in data["detail"]
+def test_unauthenticated_request_returns_401():
+    unauth_client = TestClient(app)
+    endpoints = [
+        ("GET", "/api/v1/search/youtube?query=tech"),
+        ("POST", "/api/v1/transcription"),
+        ("POST", "/api/v1/moments"),
+        ("POST", "/api/v1/render")
+    ]
+    for method, path in endpoints:
+        if method == "GET":
+            resp = unauth_client.get(path)
+        else:
+            resp = unauth_client.post(path, json={})
+        assert resp.status_code == 401
+        assert "Unauthorized" in resp.json()["detail"]
+
+def test_transcription_rejects_arbitrary_remote_urls():
+    # Arbitrary remote URLs (like YouTube, Vimeo, podcasts, external mp3s) must be rejected with 403
+    for arbitrary_url in [
+        "https://example.com/unauthorized_audio.mp3",
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://podcasts.example.com/episode.mp3"
+    ]:
+        response = client.post("/api/v1/transcription", json={
+            "sourceUrl": arbitrary_url,
+            "language": "en"
+        })
+        assert response.status_code == 403
+        data = response.json()
+        assert "detail" in data
+        assert "not permitted" in data["detail"].lower() or "blocked" in data["detail"].lower()
+
+def test_transcription_clean_failure_for_silent_local_media():
+    # Authorized local file with no speech or missing transcript must fail cleanly with 422
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        silent_video = f.name
+    try:
+        cmd = [
+            FFMPEG_BIN, "-y",
+            "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+            "-c:v", "libx264", "-c:a", "aac", "-t", "1",
+            silent_video
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        resp = client.post("/api/v1/transcription", json={"sourceUrl": silent_video, "language": "en"})
+        assert resp.status_code == 422
+        assert "Real media transcript or caption data is required" in resp.json()["detail"]
+    finally:
+        if os.path.exists(silent_video):
+            os.remove(silent_video)
 
 def test_moment_detection_with_real_transcript():
     # Realistic transcript containing over 15 words
@@ -73,7 +117,7 @@ def test_render_blocks_youtube_url():
     })
     assert response.status_code == 403
     data = response.json()
-    assert "Direct rendering from external video platforms is not permitted" in data["detail"]
+    assert "not permitted" in data["detail"].lower()
 
 def test_video_rendering_with_local_file():
     # Create a small valid test mp4 video using ffmpeg
@@ -130,7 +174,7 @@ def test_youtube_search():
     assert data[0]["isAuthorizedForGeneration"] is False
 
 def test_transcription_ssrf_blocked():
-    # Loopback, private networks, and cloud metadata must be rejected with 400
+    # Loopback, private networks, and cloud metadata must be rejected
     for malicious_url in [
         "http://127.0.0.1:8080/admin",
         "http://localhost:5000/secret",
@@ -138,8 +182,23 @@ def test_transcription_ssrf_blocked():
         "http://10.0.0.1/internal-audio.mp3"
     ]:
         resp = client.post("/api/v1/transcription", json={"sourceUrl": malicious_url, "language": "en"})
-        assert resp.status_code == 400
-        assert "blocked" in resp.json()["detail"].lower()
+        assert resp.status_code in (400, 403)
+        detail = resp.json()["detail"].lower()
+        assert "blocked" in detail or "not permitted" in detail
+
+def test_render_rejects_arbitrary_remote_urls():
+    for arbitrary_url in [
+        "https://example.com/arbitrary_video.mp4",
+        "https://external-site.org/stream.m3u8"
+    ]:
+        resp = client.post("/api/v1/render", json={
+            "clipId": "render-arb-url",
+            "sourceVideoUrl": arbitrary_url,
+            "startTime": 0.0,
+            "endTime": 5.0
+        })
+        assert resp.status_code == 403
+        assert "not permitted" in resp.json()["detail"].lower()
 
 def test_render_blocks_other_external_platforms():
     # Platforms like Vimeo, Dailymotion, Twitch must also be blocked

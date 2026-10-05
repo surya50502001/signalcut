@@ -36,7 +36,13 @@ public class YouTubeSourceProvider : ISourceProvider
         {
             // Call AI worker yt-dlp discovery endpoint
             var url = $"{workerUrl}/api/v1/search/youtube?query={Uri.EscapeDataString(query)}&limit={limit}";
-            var response = await _httpClient.GetAsync(url, ct);
+            using var reqMsg = new HttpRequestMessage(HttpMethod.Get, url);
+            var apiKey = _config["AI_WORKER_API_KEY"];
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                reqMsg.Headers.Add("X-API-Key", apiKey);
+            }
+            var response = await _httpClient.SendAsync(reqMsg, ct);
 
             if (response.IsSuccessStatusCode)
             {

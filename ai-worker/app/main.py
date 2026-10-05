@@ -6,6 +6,9 @@ import tempfile
 import time
 import json
 import urllib.request
+import ipaddress
+import socket
+from urllib.parse import urlparse
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,15 +34,69 @@ def configure_ffmpeg():
 
 FFMPEG_DIR, FFMPEG_BIN = configure_ffmpeg()
 
+# --- SSRF & Network Validation Helpers ---
+def is_private_or_restricted_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return (
+            ip.is_loopback or
+            ip.is_private or
+            ip.is_link_local or
+            ip.is_multicast or
+            ip.is_reserved or
+            ip.is_unspecified or
+            ip_str.startswith("169.254.") or
+            ip_str == "0.0.0.0"
+        )
+    except ValueError:
+        return True
+
+def validate_safe_remote_url(url: str) -> None:
+    if not url:
+        raise HTTPException(status_code=400, detail="URL cannot be empty.")
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise HTTPException(status_code=400, detail=f"Unauthorized scheme '{parsed.scheme}'. Only HTTP and HTTPS are permitted.")
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Missing hostname in URL.")
+
+    # Block well-known loopback, local, and cloud metadata hostnames
+    blocked_hosts = {
+        "localhost", "127.0.0.1", "::1", "169.254.169.254",
+        "metadata.google.internal", "instance-data", "metadata"
+    }
+    if hostname.lower() in blocked_hosts or hostname.lower().endswith(".internal") or hostname.lower().endswith(".local"):
+        raise HTTPException(status_code=400, detail=f"Access to internal/restricted host '{hostname}' is blocked.")
+
+    # Resolve IP and check for private / internal ranges (prevents SSRF and DNS rebinding)
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+        if not addr_info:
+            raise HTTPException(status_code=400, detail=f"Unable to resolve host: {hostname}")
+        for addr in addr_info:
+            ip = addr[4][0]
+            if is_private_or_restricted_ip(ip):
+                raise HTTPException(status_code=400, detail=f"Access to internal IP '{ip}' is blocked for security.")
+    except socket.gaierror as e:
+        raise HTTPException(status_code=400, detail=f"Host resolution failed for '{hostname}': {str(e)}")
+
 app = FastAPI(
     title="SignalCut AI & Media Processing Worker",
     version="1.0.0",
     description="Microservice for real media transcription, topic discovery, Gemini AI moment detection, and FFmpeg 9:16 vertical rendering."
 )
 
+# CORS: Configurable origins, avoiding wildcard in production
+raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
+if raw_origins.strip():
+    allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+else:
+    allowed_origins = ["http://localhost:5173", "http://localhost:3000", "http://localhost:5174"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -292,6 +349,7 @@ Return ONLY valid JSON matching this schema:
 
     # 2. Remote URL: Extract official or auto-generated subtitle tracks (instant & precise)
     elif req.sourceUrl.startswith("http://") or req.sourceUrl.startswith("https://"):
+        validate_safe_remote_url(req.sourceUrl)
         try:
             ydl_opts = {
                 'quiet': True,
@@ -314,6 +372,7 @@ Return ONLY valid JSON matching this schema:
                         json3_url = track_list[0].get("url")
 
                     if json3_url:
+                        validate_safe_remote_url(json3_url)
                         http_req = urllib.request.Request(json3_url, headers={"User-Agent": "Mozilla/5.0"})
                         with urllib.request.urlopen(http_req, timeout=15) as resp:
                             sub_data = json.loads(resp.read().decode("utf-8"))
@@ -551,11 +610,24 @@ def render_video_clip(req: RenderClipRequest):
     External video scraping/downloading (e.g. YouTube) is blocked.
     """
     # 1. Block unauthorized external video platforms
-    if "youtube.com" in req.sourceVideoUrl.lower() or "youtu.be" in req.sourceVideoUrl.lower():
-        raise HTTPException(
-            status_code=403,
-            detail="Direct rendering from external video platforms is not permitted. An authorized media file must be uploaded."
-        )
+    blocked_platforms = ["youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "twitch.tv"]
+    url_lower = req.sourceVideoUrl.lower()
+    for bp in blocked_platforms:
+        if bp in url_lower:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Direct rendering from external video platforms is not permitted (blocked: '{bp}'). An authorized media file must be uploaded."
+            )
+
+    # Validate remote URLs against SSRF and optional signed storage prefix
+    if req.sourceVideoUrl.startswith("http://") or req.sourceVideoUrl.startswith("https://"):
+        storage_prefix = os.environ.get("STORAGE_URL_PREFIX")
+        if storage_prefix and not req.sourceVideoUrl.startswith(storage_prefix):
+            raise HTTPException(
+                status_code=403,
+                detail="Remote media URLs must match the configured approved signed storage prefix."
+            )
+        validate_safe_remote_url(req.sourceVideoUrl)
 
     duration = max(1.0, req.endTime - req.startTime)
     output_filename = f"clip_{req.clipId}_{int(time.time())}.mp4"
@@ -609,8 +681,8 @@ def render_video_clip(req: RenderClipRequest):
 
         if not is_acquired or not os.path.exists(source_segment_path) or os.path.getsize(source_segment_path) == 0:
             raise HTTPException(
-                status_code=404,
-                detail=f"Source media file not found or could not be sliced: {req.sourceVideoUrl}"
+                status_code=422,
+                detail=f"Source media file not found or could not be sliced: {req.sourceVideoUrl}. Real media acquisition is required."
             )
 
         # 2. Render 9:16 Vertical Composition with FFmpeg
@@ -625,48 +697,30 @@ def render_video_clip(req: RenderClipRequest):
         progress_bar = f"drawbox=y=ih-16:color={clean_highlight}@1:width=iw:height=16:t=fill," if req.showProgressBar else ""
         caption_filter = f"drawtext=text='{safe_caption}':fontcolor={clean_primary}:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h*0.75"
 
-        if is_acquired and os.path.exists(source_segment_path):
-            # Dual-layer blurred 9:16 vertical stack
-            # Background: stretched and blurred 1080x1920
-            # Foreground: scaled to 1080 width, centered
-            filter_graph = (
-                f"[0:v]scale={req.width}:{req.height}:force_original_aspect_ratio=increase,crop={req.width}:{req.height},boxblur=25:5[bg];"
-                f"[0:v]scale={req.width}:-2:force_original_aspect_ratio=decrease[fg];"
-                f"[bg][fg]overlay=(W-w)/2:(H-h)/2,"
-                f"{watermark_filter}{progress_bar}{caption_filter}[outv]"
-            )
+        # Dual-layer blurred 9:16 vertical stack
+        # Background: stretched and blurred 1080x1920
+        # Foreground: scaled to 1080 width, centered
+        filter_graph = (
+            f"[0:v]scale={req.width}:{req.height}:force_original_aspect_ratio=increase,crop={req.width}:{req.height},boxblur=25:5[bg];"
+            f"[0:v]scale={req.width}:-2:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,"
+            f"{watermark_filter}{progress_bar}{caption_filter}[outv]"
+        )
 
-            cmd = [
-                FFMPEG_BIN, "-y",
-                "-i", source_segment_path,
-                "-filter_complex", filter_graph,
-                "-map", "[outv]",
-                "-map", "0:a?",
-                "-t", str(duration),
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                output_path
-            ]
-        else:
-            # High-fidelity video canvas fallback if network download was blocked
-            vf_filters = (
-                f"{watermark_filter}{progress_bar}"
-                f"drawtext=text='{safe_caption}':fontcolor={clean_primary}:fontsize=46:x=(w-tw)/2:y=(h-th)/2"
-            )
-            cmd = [
-                FFMPEG_BIN, "-y",
-                "-f", "lavfi", "-i", f"color=c=0x111827:s={req.width}x{req.height}:r=30",
-                "-f", "lavfi", "-i", "sine=frequency=440:beep_factor=4:sample_rate=44100",
-                "-vf", vf_filters,
-                "-t", str(min(15.0, duration)),
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                output_path
-            ]
+        cmd = [
+            FFMPEG_BIN, "-y",
+            "-i", source_segment_path,
+            "-filter_complex", filter_graph,
+            "-map", "[outv]",
+            "-map", "0:a?",
+            "-t", str(duration),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            output_path
+        ]
 
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
@@ -717,5 +771,5 @@ def render_video_clip(req: RenderClipRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
 

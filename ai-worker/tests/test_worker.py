@@ -129,3 +129,43 @@ def test_youtube_search():
     assert data[0]["rightsStatus"] == "DISCOVERY_ONLY"
     assert data[0]["isAuthorizedForGeneration"] is False
 
+def test_transcription_ssrf_blocked():
+    # Loopback, private networks, and cloud metadata must be rejected with 400
+    for malicious_url in [
+        "http://127.0.0.1:8080/admin",
+        "http://localhost:5000/secret",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.1/internal-audio.mp3"
+    ]:
+        resp = client.post("/api/v1/transcription", json={"sourceUrl": malicious_url, "language": "en"})
+        assert resp.status_code == 400
+        assert "blocked" in resp.json()["detail"].lower()
+
+def test_render_blocks_other_external_platforms():
+    # Platforms like Vimeo, Dailymotion, Twitch must also be blocked
+    for platform_url in [
+        "https://vimeo.com/12345678",
+        "https://www.dailymotion.com/video/x7tgad0",
+        "https://twitch.tv/videos/123456"
+    ]:
+        resp = client.post("/api/v1/render", json={
+            "clipId": "ext-test",
+            "sourceVideoUrl": platform_url,
+            "startTime": 0.0,
+            "endTime": 10.0
+        })
+        assert resp.status_code == 403
+        assert "not permitted" in resp.json()["detail"].lower()
+
+def test_render_missing_media_fails_cleanly_without_synthetic_video():
+    # If media file does not exist, worker must fail with 422 and NOT generate a fake color-bar fallback
+    resp = client.post("/api/v1/render", json={
+        "clipId": "missing-media-test",
+        "sourceVideoUrl": "/non/existent/path/video.mp4",
+        "startTime": 0.0,
+        "endTime": 10.0
+    })
+    assert resp.status_code == 422
+    assert "not found or could not be sliced" in resp.json()["detail"]
+
+

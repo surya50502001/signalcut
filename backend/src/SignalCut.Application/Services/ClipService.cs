@@ -172,7 +172,19 @@ public class ClipService : IClipService
         // 1. Strict Rights Assertion
         await _rightsAuthService.AssertCanEnterGenerationPipelineAsync(clip.Moment.SourceId, ct);
 
-        // 2. Cost Estimation & Credit Reservation
+        // 2. Strict MediaAsset requirement: MediaAsset is the source of truth for rendering
+        var mediaAsset = await _context.MediaAssets
+            .Where(m => m.SourceId == clip.Moment.SourceId)
+            .OrderByDescending(m => m.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (mediaAsset == null || string.IsNullOrWhiteSpace(mediaAsset.StorageUrl))
+        {
+            throw new UnauthorizedMediaException(clip.Moment.SourceId,
+                "Cannot render clip: An authorized media file must be uploaded before rendering.");
+        }
+
+        // 3. Cost Estimation & Credit Reservation
         decimal requiredCredits = Math.Max(15m, (decimal)Math.Ceiling(clip.DurationSeconds * 0.4));
         var wallet = await _creditWalletService.GetWalletAsync(organizationId, ct);
 
@@ -186,7 +198,7 @@ public class ClipService : IClipService
 
         await _creditWalletService.ReserveCreditsAsync(organizationId, requiredCredits, jobId, idempotencyKey, ct);
 
-        // 3. Create Job record
+        // 4. Create Job record with MediaAsset as source of truth
         var job = new Job
         {
             Id = jobId,
@@ -201,7 +213,8 @@ public class ClipService : IClipService
             PayloadJson = System.Text.Json.JsonSerializer.Serialize(new
             {
                 ClipId = clip.Id,
-                SourceUrl = clip.Moment.Source.Url,
+                MediaAssetId = mediaAsset.Id,
+                StorageKey = mediaAsset.StorageKey,
                 clip.StartTime,
                 clip.EndTime,
                 clip.AspectRatio,
@@ -213,7 +226,7 @@ public class ClipService : IClipService
         clip.RenderStatus = JobStatus.QUEUED;
         await _context.SaveChangesAsync(ct);
 
-        // 4. Trigger asynchronous background render execution with isolated DI scope
+        // 5. Trigger asynchronous background render execution with isolated DI scope
         _ = Task.Run(async () =>
         {
             if (_scopeFactory != null)
@@ -241,21 +254,18 @@ public class ClipService : IClipService
                             new(0, bgClip.StartTime, bgClip.EndTime, bgClip.Hook, bgClip.Moment.Speaker, 0.98)
                         };
 
-                        var mediaAsset = await scopedContext.MediaAssets
+                        var bgMediaAsset = await scopedContext.MediaAssets
                             .Where(m => m.SourceId == bgClip.Moment.SourceId)
                             .OrderByDescending(m => m.CreatedAt)
                             .FirstOrDefaultAsync();
 
-                        var isDirectUserUpload = bgClip.Moment.Source.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || bgClip.Moment.Source.ContentType == ContentType.USER_UPLOAD;
-                        var isLicensedStream = (bgClip.Moment.Source.RightsStatus == RightsStatus.LICENSED || bgClip.Moment.Source.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && bgClip.Moment.Source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
-
-                        if (mediaAsset == null && !isDirectUserUpload && !isLicensedStream)
+                        if (bgMediaAsset == null || string.IsNullOrWhiteSpace(bgMediaAsset.StorageUrl))
                         {
                             throw new UnauthorizedMediaException(bgClip.Moment.SourceId,
                                 "Cannot render clip: No authorized media file found for this source. Discovered sources require uploaded media.");
                         }
 
-                        var sourceVideoUrl = mediaAsset?.StorageUrl ?? bgClip.Moment.Source.Url;
+                        var sourceVideoUrl = bgMediaAsset.StorageUrl;
                         if (!string.IsNullOrEmpty(sourceVideoUrl) && sourceVideoUrl.StartsWith("/storage/"))
                         {
                             var relative = sourceVideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
@@ -356,12 +366,24 @@ public class ClipService : IClipService
                         .OrderByDescending(m => m.CreatedAt)
                         .FirstOrDefaultAsync();
 
-                    var fallbackVideoUrl = fallbackAsset?.StorageUrl ?? clip.Moment.Source.Url;
+                    if (fallbackAsset == null || string.IsNullOrWhiteSpace(fallbackAsset.StorageUrl))
+                    {
+                        throw new UnauthorizedMediaException(clip.Moment.SourceId,
+                            "Cannot render clip: No authorized media file found for this source. Discovered sources require uploaded media.");
+                    }
+
+                    var fallbackVideoUrl = fallbackAsset.StorageUrl;
                     if (!string.IsNullOrEmpty(fallbackVideoUrl) && fallbackVideoUrl.StartsWith("/storage/"))
                     {
                         var relative = fallbackVideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
                         var localPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", relative);
                         if (File.Exists(localPath)) fallbackVideoUrl = localPath;
+                    }
+
+                    if (fallbackVideoUrl.Contains("youtube.com", StringComparison.OrdinalIgnoreCase) || fallbackVideoUrl.Contains("youtu.be", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new UnauthorizedMediaException(clip.Moment.SourceId,
+                            "Direct rendering from external video platforms is not permitted. An authorized media file must be uploaded.");
                     }
 
                     var renderReq = new RenderVideoRequest(

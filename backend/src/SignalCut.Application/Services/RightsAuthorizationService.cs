@@ -71,11 +71,14 @@ public class RightsAuthorizationService : IRightsAuthorizationService
             throw new ValidationException("ConfirmationStatement", "Explicit statement 'I confirm that I own this content or have permission to use, edit, and publish it.' or 'I confirm that I own or have permission to use this content.' is required.");
         }
 
-        var isDirectUserUpload = source.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || source.ContentType == ContentType.USER_UPLOAD;
         var hasUploadedMedia = source.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
-        var isLicensedDirect = (request.ClaimedRightsStatus == RightsStatus.LICENSED || request.ClaimedRightsStatus == RightsStatus.PUBLIC_DOMAIN) && !string.IsNullOrEmpty(request.ProofDocumentUrl);
+        var isLicensedDirect = (request.ClaimedRightsStatus == RightsStatus.LICENSED || request.ClaimedRightsStatus == RightsStatus.PUBLIC_DOMAIN)
+                               && !string.IsNullOrEmpty(request.ProofDocumentUrl)
+                               && source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
 
-        bool canDirectlyAuthorize = isDirectUserUpload || hasUploadedMedia || isLicensedDirect;
+        // A source must have an actual uploaded MediaAsset (file physically stored) or be a
+        // verified LICENSED/PUBLIC_DOMAIN source. Provider label alone is NOT sufficient.
+        bool canDirectlyAuthorize = hasUploadedMedia || isLicensedDirect;
 
         source.RightsConfirmedByUserId = userId;
         source.RightsConfirmationTimestamp = DateTime.UtcNow;
@@ -147,11 +150,13 @@ public class RightsAuthorizationService : IRightsAuthorizationService
             throw new NotFoundException(nameof(Source), sourceId);
         }
 
-        var isDirectUserUpload = source.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || source.ContentType == ContentType.USER_UPLOAD;
         var hasUploadedMedia = source.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
-        var isVerifiedLicensed = (source.RightsStatus == RightsStatus.LICENSED || source.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
+        var isVerifiedLicensed = (source.RightsStatus == RightsStatus.LICENSED || source.RightsStatus == RightsStatus.PUBLIC_DOMAIN)
+                                 && source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
 
-        var hasAuthorizedMediaAccess = isDirectUserUpload || hasUploadedMedia || isVerifiedLicensed;
+        // hasAuthorizedMediaAccess requires an ACTUAL uploaded MediaAsset or verified LICENSED/PUBLIC_DOMAIN.
+        // Provider label or ContentType alone does NOT grant media access.
+        var hasAuthorizedMediaAccess = hasUploadedMedia || isVerifiedLicensed;
 
         if (!hasAuthorizedMediaAccess || source.RightsStatus == RightsStatus.DISCOVERY_ONLY || source.RightsStatus == RightsStatus.BLOCKED || source.RightsStatus == RightsStatus.UNKNOWN)
         {
@@ -237,6 +242,9 @@ public class RightsAuthorizationService : IRightsAuthorizationService
             throw new ValidationException("FileSize", "File size exceeds the 500 MB maximum limit.");
         }
 
+        // Validate actual container format via magic bytes (independent of client-supplied MIME)
+        ValidateMediaContainer(fileStream, ext);
+
         // Multi-tenant directory isolation: media/{orgId}/{sourceId}/{randomGuid}{ext}
         var key = $"media/{organizationId:N}/{source.Id:N}/{Guid.NewGuid():N}{ext}";
         var storageUrl = await _storage.UploadAsync(key, fileStream, contentType, ct);
@@ -309,6 +317,102 @@ public class RightsAuthorizationService : IRightsAuthorizationService
             ConfirmedAt: source.RightsConfirmationTimestamp.Value,
             Message: "Media uploaded successfully and source authorized for clip generation."
         );
+    }
+
+    private static void ValidateMediaContainer(Stream stream, string extension)
+    {
+        if (stream == null || !stream.CanRead)
+        {
+            throw new ValidationException("FileStream", "Uploaded media stream cannot be read.");
+        }
+
+        if (stream.CanSeek)
+        {
+            if (stream.Length < 12)
+            {
+                throw new ValidationException("FileContent", "Uploaded file is too small or truncated to be a valid media container.");
+            }
+
+            var originalPos = stream.Position;
+            try
+            {
+                stream.Position = 0;
+                var header = new byte[16];
+                int bytesRead = stream.Read(header, 0, header.Length);
+                if (bytesRead < 12)
+                {
+                    throw new ValidationException("FileContent", "Unable to read media container header.");
+                }
+
+                bool isValid = false;
+                var ext = extension.ToLowerInvariant();
+
+                switch (ext)
+                {
+                    case ".mp4":
+                    case ".m4a":
+                    case ".mov":
+                        // ISO Base Media File Format: bytes 4..7 == 'ftyp', 'moov', 'wide', or 'mdat'
+                        string boxType = System.Text.Encoding.ASCII.GetString(header, 4, 4);
+                        if (boxType == "ftyp" || boxType == "moov" || boxType == "wide" || boxType == "mdat")
+                        {
+                            isValid = true;
+                        }
+                        break;
+
+                    case ".mkv":
+                    case ".webm":
+                        // EBML header: 0x1A, 0x45, 0xDF, 0xA3
+                        if (header[0] == 0x1A && header[1] == 0x45 && header[2] == 0xDF && header[3] == 0xA3)
+                        {
+                            isValid = true;
+                        }
+                        break;
+
+                    case ".wav":
+                        // RIFF header with WAVE format
+                        if (header[0] == (byte)'R' && header[1] == (byte)'I' && header[2] == (byte)'F' && header[3] == (byte)'F' &&
+                            header[8] == (byte)'W' && header[9] == (byte)'A' && header[10] == (byte)'V' && header[11] == (byte)'E')
+                        {
+                            isValid = true;
+                        }
+                        break;
+
+                    case ".mp3":
+                        // ID3v2 tag or MPEG audio frame sync (0xFF, 0xFB/F3/F2/E3/E2)
+                        if (header[0] == (byte)'I' && header[1] == (byte)'D' && header[2] == (byte)'3')
+                        {
+                            isValid = true;
+                        }
+                        else if (header[0] == 0xFF && (header[1] & 0xE0) == 0xE0)
+                        {
+                            isValid = true;
+                        }
+                        break;
+
+                    case ".aac":
+                        // ADTS sync word: 0xFF, 0xF1 or 0xF9, or ID3
+                        if (header[0] == 0xFF && (header[1] & 0xF0) == 0xF0)
+                        {
+                            isValid = true;
+                        }
+                        else if (header[0] == (byte)'I' && header[1] == (byte)'D' && header[2] == (byte)'3')
+                        {
+                            isValid = true;
+                        }
+                        break;
+                }
+
+                if (!isValid)
+                {
+                    throw new ValidationException("FileContent", $"File signature does not match expected format for extension '{ext}'. The file container is invalid, corrupted, or unsupported.");
+                }
+            }
+            finally
+            {
+                stream.Position = originalPos;
+            }
+        }
     }
 }
 

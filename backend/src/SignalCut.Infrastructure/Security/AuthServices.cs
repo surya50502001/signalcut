@@ -44,7 +44,11 @@ public class JwtTokenService : ITokenService
 
     public (string Token, DateTime ExpiresAt) GenerateJwtToken(User user, Organization org)
     {
-        var secret = _config["JWT_SECRET"] ?? "signalcut_production_secret_key_minimum_32_characters_long_123456";
+        var secret = _config["JWT_SECRET"];
+        if (string.IsNullOrWhiteSpace(secret))
+            throw new InvalidOperationException(
+                "JWT_SECRET is not configured. Ensure the environment variable is set before generating tokens.");
+
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
         var expiresAt = DateTime.UtcNow.AddHours(12);

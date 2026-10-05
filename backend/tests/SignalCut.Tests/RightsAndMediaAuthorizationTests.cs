@@ -188,7 +188,8 @@ public class RightsAndMediaAuthorizationTests
         await initialAssert.Should().ThrowAsync<UnauthorizedMediaException>();
 
         // Act: User uploads authorized media and confirms legal statement
-        var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("real audio video binary content"));
+        var mp4Header = new byte[] { 0x00, 0x00, 0x00, 0x18, (byte)'f', (byte)'t', (byte)'y', (byte)'p', (byte)'i', (byte)'s', (byte)'o', (byte)'m' };
+        var stream = new MemoryStream(mp4Header.Concat(System.Text.Encoding.UTF8.GetBytes("real audio video binary content")).ToArray());
         var confirmReq = new RightsConfirmationRequest(
             source.Id,
             RightsStatus.USER_AUTHORIZED,
@@ -337,6 +338,18 @@ public class RightsAndMediaAuthorizationTests
             AuthorizationStatus = AuthorizationStatus.VERIFIED
         };
         context.Sources.Add(source);
+
+        var mediaAsset = new MediaAsset
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            SourceId = source.Id,
+            AssetType = "SOURCE_VIDEO",
+            StorageKey = "media/silent.mp4",
+            StorageUrl = "/storage/media/silent.mp4",
+            ContentType = "video/mp4"
+        };
+        context.MediaAssets.Add(mediaAsset);
         await context.SaveChangesAsync();
 
         // Act: Attempt to detect moments when real transcript is unavailable
@@ -391,6 +404,155 @@ public class RightsAndMediaAuthorizationTests
         );
 
         await act.Should().ThrowAsync<NotFoundException>();
+    }
+
+    [Fact]
+    public async Task UserUploadSource_WithoutMediaAsset_IsBlockedFromPipeline()
+    {
+        // Arrange: Source has Provider="UserUpload" and RightsStatus=USER_OWNED, but no MediaAsset attached
+        using var context = CreateInMemoryDbContext();
+        var rightsService = new RightsAuthorizationService(context, NullLogger<RightsAuthorizationService>.Instance);
+
+        var orgId = Guid.NewGuid();
+        var source = new Source
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Provider = "UserUpload",
+            ContentType = ContentType.USER_UPLOAD,
+            Title = "User Upload Without File",
+            RightsStatus = RightsStatus.USER_OWNED,
+            AuthorizationStatus = AuthorizationStatus.VERIFIED
+        };
+        context.Sources.Add(source);
+        await context.SaveChangesAsync();
+
+        // Act & Assert: Must be BLOCKED because Provider=="UserUpload" alone does not grant pipeline access without an actual MediaAsset
+        var act = async () => await rightsService.AssertCanEnterGenerationPipelineAsync(source.Id);
+        var ex = await act.Should().ThrowAsync<UnauthorizedMediaException>();
+        ex.Which.SourceId.Should().Be(source.Id);
+    }
+
+    [Fact]
+    public async Task ExternalLicensedSource_WithoutMediaAsset_BlockedUnlessVerified()
+    {
+        // Arrange: Discovered licensed source with PENDING status and no MediaAsset
+        using var context = CreateInMemoryDbContext();
+        var rightsService = new RightsAuthorizationService(context, NullLogger<RightsAuthorizationService>.Instance);
+
+        var orgId = Guid.NewGuid();
+        var source = new Source
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Provider = "Podcast",
+            Title = "Unverified Licensed Source",
+            Url = "https://podcast.example.com/episode1",
+            RightsStatus = RightsStatus.LICENSED,
+            AuthorizationStatus = AuthorizationStatus.PENDING
+        };
+        context.Sources.Add(source);
+        await context.SaveChangesAsync();
+
+        // Act & Assert: Must throw UnauthorizedMediaException
+        var act = async () => await rightsService.AssertCanEnterGenerationPipelineAsync(source.Id);
+        await act.Should().ThrowAsync<UnauthorizedMediaException>();
+    }
+
+    [Fact]
+    public async Task InvalidMediaContainerMagicBytes_IsRejected()
+    {
+        // Arrange: Client uploads a text/executable stream claiming to be .mp4
+        using var context = CreateInMemoryDbContext();
+        var storage = new TestObjectStorage();
+        var rightsService = new RightsAuthorizationService(context, NullLogger<RightsAuthorizationService>.Instance, storage);
+
+        var orgId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var source = new Source
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Title = "Target Source",
+            RightsStatus = RightsStatus.DISCOVERY_ONLY
+        };
+        context.Sources.Add(source);
+        await context.SaveChangesAsync();
+
+        // Plain text bytes disguised as video/mp4
+        var malformedStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("This is plain text and not a valid MP4 or media container!"));
+        var confirmReq = new RightsConfirmationRequest(
+            source.Id,
+            RightsStatus.USER_AUTHORIZED,
+            "I confirm that I own this content or have permission to use, edit, and publish it."
+        );
+
+        // Act & Assert: Must reject with ValidationException due to magic bytes mismatch
+        var act = async () => await rightsService.UploadAndAuthorizeMediaAsync(
+            orgId,
+            userId,
+            source.Id,
+            malformedStream,
+            "fake_video.mp4",
+            "video/mp4",
+            confirmReq
+        );
+
+        var ex = await act.Should().ThrowAsync<ValidationException>();
+        ex.Which.Errors.Should().ContainKey("FileContent");
+    }
+
+    [Fact]
+    public async Task RenderWithoutMediaAsset_IsBlocked()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var rightsService = new RightsAuthorizationService(context, NullLogger<RightsAuthorizationService>.Instance);
+        var walletService = new CreditWalletService(context, NullLogger<CreditWalletService>.Instance);
+        var clipService = new ClipService(context, rightsService, walletService, new TestVideoProcessor(), NullLogger<ClipService>.Instance);
+
+        var orgId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        var source = new Source
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Title = "Source Without Asset",
+            RightsStatus = RightsStatus.USER_OWNED,
+            AuthorizationStatus = AuthorizationStatus.VERIFIED
+        };
+        context.Sources.Add(source);
+
+        var moment = new Moment
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            SourceId = source.Id,
+            StartTime = 10.0,
+            EndTime = 30.0,
+            TranscriptSnippet = "Sample insight",
+            SuggestedTitle = "Test Clip",
+            SuggestedHook = "Test Hook"
+        };
+        context.Moments.Add(moment);
+
+        var clip = new Clip
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            MomentId = moment.Id,
+            CreatedByUserId = userId,
+            StartTime = 10.0,
+            EndTime = 30.0,
+            RenderStatus = JobStatus.CREATED
+        };
+        context.Clips.Add(clip);
+        await context.SaveChangesAsync();
+
+        // Act & Assert: Attempting to queue render for a source without an authorized MediaAsset must throw UnauthorizedMediaException
+        var act = async () => await clipService.QueueRenderAsync(orgId, userId, clip.Id);
+        await act.Should().ThrowAsync<UnauthorizedMediaException>();
     }
 
     // --- Test Stubs ---

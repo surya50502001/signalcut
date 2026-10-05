@@ -88,6 +88,9 @@ public static class DependencyInjection
         services.AddScoped<IAdminService, AnalyticsAndAdminService>();
         services.AddScoped<IAnalyticsService, AnalyticsAndAdminService>();
 
+        // 12. Startup Job Reconciliation
+        services.AddHostedService<StartupJobReconciliationService>();
+
         return services;
     }
 }

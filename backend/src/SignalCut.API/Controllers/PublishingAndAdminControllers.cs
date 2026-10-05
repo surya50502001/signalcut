@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using SignalCut.Application.DTOs;
 using SignalCut.Application.Interfaces;
@@ -5,6 +6,7 @@ using SignalCut.Domain.Enums;
 
 namespace SignalCut.API.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/v1/[controller]")]
 public class PublishingController : ControllerBase
@@ -21,7 +23,7 @@ public class PublishingController : ControllerBase
     [HttpGet("accounts")]
     public async Task<IActionResult> GetAccounts(CancellationToken ct)
     {
-        var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var orgId = _userContext.OrganizationId!.Value;
         var accounts = await _publishingService.GetConnectedAccountsAsync(orgId, ct);
         return Ok(new { success = true, data = accounts });
     }
@@ -31,7 +33,7 @@ public class PublishingController : ControllerBase
     [HttpPost("connect-account")]
     public async Task<IActionResult> ConnectAccount([FromBody] ConnectAccountRequest request, CancellationToken ct)
     {
-        var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var orgId = _userContext.OrganizationId!.Value;
         var account = await _publishingService.ConnectAccountMockAsync(orgId, request.Platform, request.AccountName, ct);
         return Ok(new { success = true, data = account });
     }
@@ -39,7 +41,7 @@ public class PublishingController : ControllerBase
     [HttpPost("schedule")]
     public async Task<IActionResult> SchedulePublish([FromBody] SchedulePublishRequest request, CancellationToken ct)
     {
-        var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var orgId = _userContext.OrganizationId!.Value;
         var job = await _publishingService.SchedulePublishAsync(orgId, request, ct);
         return Ok(new { success = true, data = job });
     }
@@ -47,12 +49,13 @@ public class PublishingController : ControllerBase
     [HttpGet("history")]
     public async Task<IActionResult> GetHistory(CancellationToken ct)
     {
-        var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var orgId = _userContext.OrganizationId!.Value;
         var history = await _publishingService.GetPublishingHistoryAsync(orgId, ct);
         return Ok(new { success = true, data = history });
     }
 }
 
+[Authorize]
 [ApiController]
 [Route("api/v1/[controller]")]
 public class AnalyticsController : ControllerBase
@@ -69,12 +72,13 @@ public class AnalyticsController : ControllerBase
     [HttpGet("overview")]
     public async Task<IActionResult> GetOverview(CancellationToken ct)
     {
-        var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var orgId = _userContext.OrganizationId!.Value;
         var analytics = await _analyticsService.GetUserAnalyticsAsync(orgId, ct);
         return Ok(new { success = true, data = analytics });
     }
 }
 
+[Authorize(Roles = "Admin")]
 [ApiController]
 [Route("api/v1/[controller]")]
 public class AdminController : ControllerBase

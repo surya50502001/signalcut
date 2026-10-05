@@ -212,11 +212,10 @@ public class SearchDiscoveryService : ISearchDiscoveryService
             return false;
         }
 
-        var isDirectUserUpload = s.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || s.ContentType == ContentType.USER_UPLOAD;
         var hasUploadedMedia = s.MediaAssets != null && s.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
         var isLicensedDirect = (s.RightsStatus == RightsStatus.LICENSED || s.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && s.AuthorizationStatus == AuthorizationStatus.VERIFIED;
 
-        var hasAuthorizedMedia = isDirectUserUpload || hasUploadedMedia || isLicensedDirect;
+        var hasAuthorizedMedia = hasUploadedMedia || isLicensedDirect;
         if (!hasAuthorizedMedia) return false;
 
         return s.RightsStatus switch

@@ -74,6 +74,7 @@ public static class DependencyInjection
         services.AddScoped<IPublishingProvider, LinkedInPublishingProvider>();
         services.AddScoped<IPublishingProvider, InstagramPublishingProvider>();
         services.AddScoped<IPublishingProvider, TikTokPublishingProvider>();
+        services.AddScoped<IPublishingProvider, XPublishingProvider>();
 
         // 11. Core Application Domain Services
         services.AddScoped<ICreditWalletService, CreditWalletService>();

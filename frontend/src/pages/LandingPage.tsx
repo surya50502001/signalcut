@@ -246,6 +246,9 @@ export const LandingPage: React.FC = () => {
           <div className="flex items-center space-x-6 text-slate-400">
             <Link to="/pricing" className="hover:text-white transition">Pricing</Link>
             <Link to="/login" className="hover:text-white transition">Sign In</Link>
+            <Link to="/terms" className="hover:text-white transition">Terms</Link>
+            <Link to="/privacy" className="hover:text-white transition">Privacy</Link>
+            <Link to="/dmca" className="hover:text-white transition">DMCA</Link>
             <span>© 2026 SignalCut Platform. All rights reserved.</span>
           </div>
         </div>

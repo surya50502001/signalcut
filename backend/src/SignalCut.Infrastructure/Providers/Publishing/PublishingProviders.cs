@@ -74,3 +74,27 @@ public class TikTokPublishingProvider : IPublishingProvider
         ));
     }
 }
+
+public class XPublishingProvider : IPublishingProvider
+{
+    private readonly ILogger<XPublishingProvider> _logger;
+    public PublishingPlatform Platform => PublishingPlatform.X;
+
+    public XPublishingProvider(ILogger<XPublishingProvider> logger)
+    {
+        _logger = logger;
+    }
+
+    public Task<PublishPostResult> PublishAsync(PublishPostRequest request, CancellationToken ct = default)
+    {
+        _logger.LogInformation("Publishing post/video to X (Twitter). Title: {Title}", request.Title);
+        var postId = $"x_tweet_{Guid.NewGuid():N}";
+        return Task.FromResult(new PublishPostResult(
+            Success: true,
+            ExternalPostId: postId,
+            ExternalPostUrl: $"https://x.com/creator/status/{postId}",
+            ErrorMessage: null
+        ));
+    }
+}
+

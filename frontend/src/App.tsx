@@ -15,6 +15,7 @@ import { CreditsPage, AnalyticsPage } from './pages/CreditsAndAnalyticsPages';
 import { AdminPage, ProjectsPage } from './pages/AdminAndProjectsPages';
 import { SettingsPage, LoginPage, SignupPage } from './pages/SettingsAndAuthPages';
 import { DashboardPage, PricingPage } from './pages/DashboardAndPricingPages';
+import { TermsOfServicePage, DMCAPolicyPage, PrivacyPolicyPage } from './pages/LegalPages';
 
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -46,6 +47,9 @@ export function App() {
           <Route path="/pricing" element={<AppLayout><PricingPage /></AppLayout>} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
+          <Route path="/terms" element={<TermsOfServicePage />} />
+          <Route path="/privacy" element={<PrivacyPolicyPage />} />
+          <Route path="/dmca" element={<DMCAPolicyPage />} />
 
           {/* Authenticated Dashboard Pages */}
           <Route path="/dashboard" element={<AppLayout><DashboardPage /></AppLayout>} />

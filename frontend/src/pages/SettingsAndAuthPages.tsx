@@ -290,6 +290,13 @@ export const SignupPage: React.FC = () => {
             <span>{loading ? 'Creating...' : 'Start Free Trial'}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
+
+          <p className="text-[11px] text-slate-500 text-center leading-relaxed">
+            By creating an account, you agree to our{' '}
+            <Link to="/terms" className="text-purple-400 underline hover:text-purple-300">Terms of Service</Link>,{' '}
+            <Link to="/privacy" className="text-purple-400 underline hover:text-purple-300">Privacy Policy</Link>, and{' '}
+            <Link to="/dmca" className="text-purple-400 underline hover:text-purple-300">DMCA Policy</Link>.
+          </p>
         </form>
 
         <div className="text-center text-xs text-slate-400">

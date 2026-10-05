@@ -238,6 +238,7 @@ export const PublishingPage: React.FC = () => {
             { platform: 'YOUTUBE', name: 'YouTube Shorts', color: 'from-red-600 to-rose-700' },
             { platform: 'TIKTOK', name: 'TikTok Video', color: 'from-slate-800 to-slate-900' },
             { platform: 'INSTAGRAM', name: 'Instagram Reels', color: 'from-pink-600 to-purple-600' },
+            { platform: 'X', name: 'X / Twitter Video', color: 'from-slate-700 to-zinc-900' },
             { platform: 'LINKEDIN', name: 'LinkedIn Video', color: 'from-blue-700 to-indigo-800' },
           ].map((item) => {
             const connected = accounts.find((a) => a.platform === item.platform);

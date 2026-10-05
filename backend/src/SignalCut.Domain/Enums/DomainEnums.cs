@@ -95,7 +95,8 @@ public enum PublishingPlatform
     YOUTUBE,
     INSTAGRAM,
     TIKTOK,
-    LINKEDIN
+    LINKEDIN,
+    X
 }
 
 public enum PublishingStatus

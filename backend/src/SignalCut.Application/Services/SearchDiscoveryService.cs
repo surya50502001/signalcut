@@ -70,6 +70,7 @@ public class SearchDiscoveryService : ISearchDiscoveryService
         {
             // Check if already existing in org
             var existing = await _context.Sources
+                .Include(s => s.MediaAssets)
                 .FirstOrDefaultAsync(s => s.OrganizationId == organizationId && (s.ExternalSourceId == item.ExternalId || s.Url == item.Url), ct);
 
             Source source;
@@ -122,10 +123,7 @@ public class SearchDiscoveryService : ISearchDiscoveryService
                 source.RightsStatus,
                 source.AuthorizationStatus,
                 source.TranscriptAvailability,
-                IsAuthorizedForGeneration: source.RightsStatus == RightsStatus.USER_OWNED ||
-                                           (source.RightsStatus == RightsStatus.USER_AUTHORIZED && source.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
-                                           source.RightsStatus == RightsStatus.LICENSED ||
-                                           source.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
+                IsAuthorizedForGeneration: CheckIsAuthorizedForGeneration(source),
                 source.RelevanceScore,
                 BestMomentTimestamp: FormatBestMomentTimestamp(source.DurationSeconds, source.RelevanceScore),
                 Episode: ExtractEpisode(source.Title)
@@ -146,6 +144,7 @@ public class SearchDiscoveryService : ISearchDiscoveryService
     public async Task<SourceDto?> GetSourceByIdAsync(Guid organizationId, Guid sourceId, CancellationToken ct = default)
     {
         var source = await _context.Sources
+            .Include(s => s.MediaAssets)
             .FirstOrDefaultAsync(s => s.Id == sourceId && s.OrganizationId == organizationId, ct);
 
         if (source == null) return null;
@@ -166,10 +165,7 @@ public class SearchDiscoveryService : ISearchDiscoveryService
             source.RightsStatus,
             source.AuthorizationStatus,
             source.TranscriptAvailability,
-            IsAuthorizedForGeneration: source.RightsStatus == RightsStatus.USER_OWNED ||
-                                       (source.RightsStatus == RightsStatus.USER_AUTHORIZED && source.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
-                                       source.RightsStatus == RightsStatus.LICENSED ||
-                                       source.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
+            IsAuthorizedForGeneration: CheckIsAuthorizedForGeneration(source),
             source.RelevanceScore,
             BestMomentTimestamp: FormatBestMomentTimestamp(source.DurationSeconds, source.RelevanceScore),
             Episode: ExtractEpisode(source.Title)
@@ -179,6 +175,7 @@ public class SearchDiscoveryService : ISearchDiscoveryService
     public async Task<List<SourceDto>> GetDiscoveredSourcesAsync(Guid organizationId, int page = 1, int pageSize = 20, CancellationToken ct = default)
     {
         var sources = await _context.Sources
+            .Include(s => s.MediaAssets)
             .Where(s => s.OrganizationId == organizationId)
             .OrderByDescending(s => s.CreatedAt)
             .Skip((page - 1) * pageSize)
@@ -201,14 +198,35 @@ public class SearchDiscoveryService : ISearchDiscoveryService
             s.RightsStatus,
             s.AuthorizationStatus,
             s.TranscriptAvailability,
-            s.RightsStatus == RightsStatus.USER_OWNED ||
-            (s.RightsStatus == RightsStatus.USER_AUTHORIZED && s.AuthorizationStatus == AuthorizationStatus.VERIFIED) ||
-            s.RightsStatus == RightsStatus.LICENSED ||
-            s.RightsStatus == RightsStatus.PUBLIC_DOMAIN,
+            CheckIsAuthorizedForGeneration(s),
             s.RelevanceScore,
             BestMomentTimestamp: FormatBestMomentTimestamp(s.DurationSeconds, s.RelevanceScore),
             Episode: ExtractEpisode(s.Title)
         )).ToList();
+    }
+
+    private static bool CheckIsAuthorizedForGeneration(Source s)
+    {
+        if (s.RightsStatus == RightsStatus.DISCOVERY_ONLY || s.RightsStatus == RightsStatus.BLOCKED || s.RightsStatus == RightsStatus.UNKNOWN)
+        {
+            return false;
+        }
+
+        var isDirectUserUpload = s.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || s.ContentType == ContentType.USER_UPLOAD;
+        var hasUploadedMedia = s.MediaAssets != null && s.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
+        var isLicensedDirect = (s.RightsStatus == RightsStatus.LICENSED || s.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && s.AuthorizationStatus == AuthorizationStatus.VERIFIED;
+
+        var hasAuthorizedMedia = isDirectUserUpload || hasUploadedMedia || isLicensedDirect;
+        if (!hasAuthorizedMedia) return false;
+
+        return s.RightsStatus switch
+        {
+            RightsStatus.USER_OWNED => true,
+            RightsStatus.USER_AUTHORIZED => s.AuthorizationStatus == AuthorizationStatus.VERIFIED,
+            RightsStatus.LICENSED => s.AuthorizationStatus == AuthorizationStatus.VERIFIED,
+            RightsStatus.PUBLIC_DOMAIN => true,
+            _ => false
+        };
     }
 
     private static string? ExtractEpisode(string title)

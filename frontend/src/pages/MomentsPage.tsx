@@ -75,14 +75,15 @@ export const MomentsPage: React.FC = () => {
     try {
       // Fetch source details
       const sourceRes = await apiClient.get(`/api/v1/sources/${sourceId}`);
-      setSource(sourceRes.data?.data);
+      const srcData = sourceRes.data?.data;
+      setSource(srcData);
 
       // Fetch moments
       const res = await apiClient.get(`/api/v1/moments/source/${sourceId}`);
       if (res.data?.data && res.data.data.length > 0) {
         setMoments(res.data.data);
-      } else {
-        // Auto-detect if empty
+      } else if (srcData && srcData.isAuthorizedForGeneration) {
+        // Auto-detect if empty only when authorized
         await handleDetectMoments();
       }
     } catch (err: any) {
@@ -94,6 +95,11 @@ export const MomentsPage: React.FC = () => {
 
   const handleDetectMoments = async () => {
     if (!sourceId) return;
+    if (source && !source.isAuthorizedForGeneration) {
+      setShowUploadModal(true);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -104,7 +110,11 @@ export const MomentsPage: React.FC = () => {
       setMoments(res.data?.data || []);
       await refreshWallet();
     } catch (err: any) {
-      setError(err.response?.data?.error?.message || 'Failed to analyze source.');
+      if (err.response?.data?.error?.code === 'UNAUTHORIZED_MEDIA') {
+        setShowUploadModal(true);
+      } else {
+        setError(err.response?.data?.error?.message || 'Failed to analyze source.');
+      }
     } finally {
       setLoading(false);
     }
@@ -223,12 +233,13 @@ export const MomentsPage: React.FC = () => {
       {error && (
         <div className="p-4 bg-rose-950/30 border border-rose-900/50 rounded-2xl text-rose-300 text-xs flex items-center justify-between">
           <span>{error}</span>
-          {error.includes('UNAUTHORIZED_MEDIA') && (
+          {(error.includes('UNAUTHORIZED_MEDIA') || error.includes('authorized way to retrieve the media')) && (
             <button
-              onClick={() => setShowRightsModal(true)}
-              className="px-3 py-1 bg-rose-600 text-white font-bold rounded-lg ml-3 text-[11px]"
+              onClick={() => setShowUploadModal(true)}
+              className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg ml-3 text-[11px] flex items-center space-x-1 shrink-0"
             >
-              Confirm Rights
+              <UploadCloud className="w-3 h-3" />
+              <span>Upload Media</span>
             </button>
           )}
         </div>

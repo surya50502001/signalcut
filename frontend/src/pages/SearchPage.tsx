@@ -263,6 +263,12 @@ export const SearchPage: React.FC = () => {
                     )}
                   </div>
                 </div>
+
+                {!source.isAuthorizedForGeneration && source.rightsStatus !== 'BLOCKED' && (
+                  <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-2.5 text-[11px] text-amber-300/90 leading-relaxed">
+                    Discovery only — SignalCut cannot retrieve this media. Upload a copy you have permission to use to create clips.
+                  </div>
+                )}
               </div>
 
               {/* Actions */}

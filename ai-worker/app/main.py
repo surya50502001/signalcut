@@ -228,118 +228,36 @@ def search_youtube(query: str = Query(..., min_length=1), limit: int = Query(15,
 @app.post("/api/v1/transcription", response_model=TranscriptionResponse)
 def transcribe_media(req: TranscriptionRequest):
     """
-    Extracts real transcripts and timestamps from YouTube auto-captions or transcribes audio using Google Gemini.
+    Extracts real transcripts and timestamps from media files or YouTube captions.
+    Fails cleanly if no real transcript or captions are available.
     """
     import yt_dlp
 
     chunks: List[TranscriptChunkItem] = []
     full_text = ""
     is_auto = True
-    provider_name = "YouTube-Captions"
+    provider_name = "Whisper"
 
-    # 1. Try extracting YouTube official or auto-generated subtitle tracks (instant & precise)
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'skip_download': True,
-            'writesubtitles': True,
-            'writeautomaticsub': True,
-            'no_warnings': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.sourceUrl, download=False)
-            if info:
-                subs = info.get("subtitles", {})
-                auto_subs = info.get("automatic_captions", {})
+    # 1. If req.sourceUrl is an authorized local media file (user uploaded media)
+    if os.path.exists(req.sourceUrl):
+        gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("AI_API_KEY")
+        if gemini_key:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=gemini_key)
+                provider_name = "Google-Gemini-Flash"
 
-                # Find English or requested language tracks
-                lang = req.language or "en"
-                track_list = subs.get(lang) or subs.get("en") or auto_subs.get(lang) or auto_subs.get("en") or []
+                # Extract audio track to lightweight mp3 for fast upload
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    audio_path = os.path.join(tmp_dir, "extracted_audio.mp3")
+                    cmd_audio = [
+                        FFMPEG_BIN, "-y",
+                        "-i", req.sourceUrl,
+                        "-vn", "-acodec", "libmp3lame", "-q:a", "4",
+                        audio_path
+                    ]
+                    subprocess.run(cmd_audio, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-                # Find json3 format URL
-                json3_url = next((s["url"] for s in track_list if s.get("ext") == "json3"), None)
-                if not json3_url and track_list:
-                    json3_url = track_list[0].get("url")
-
-                if json3_url:
-                    http_req = urllib.request.Request(json3_url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(http_req, timeout=15) as resp:
-                        sub_data = json.loads(resp.read().decode("utf-8"))
-                        events = sub_data.get("events", [])
-                        
-                        chunk_idx = 0
-                        sentence_accumulator = []
-                        sentence_start = 0.0
-                        sentence_end = 0.0
-
-                        for ev in events:
-                            if "segs" not in ev:
-                                continue
-                            start_ms = ev.get("tStartMs", 0)
-                            dur_ms = ev.get("dDurationMs", 0)
-                            seg_text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
-                            if not seg_text or seg_text == "\n":
-                                continue
-
-                            if not sentence_accumulator:
-                                sentence_start = start_ms / 1000.0
-
-                            sentence_accumulator.append(seg_text)
-                            sentence_end = (start_ms + dur_ms) / 1000.0
-
-                            # Group segments into ~10-25 second conversational chunks
-                            accumulated_str = " ".join(sentence_accumulator)
-                            if (sentence_end - sentence_start) >= 12.0 or accumulated_str.endswith((".", "!", "?")):
-                                chunks.append(TranscriptChunkItem(
-                                    chunkIndex=chunk_idx,
-                                    startTime=round(sentence_start, 2),
-                                    endTime=round(sentence_end, 2),
-                                    text=accumulated_str,
-                                    speaker=f"Speaker {(chunk_idx % 2) + 1}",
-                                    confidence=0.98
-                                ))
-                                chunk_idx += 1
-                                sentence_accumulator = []
-
-                        if sentence_accumulator:
-                            chunks.append(TranscriptChunkItem(
-                                chunkIndex=chunk_idx,
-                                startTime=round(sentence_start, 2),
-                                endTime=round(sentence_end, 2),
-                                text=" ".join(sentence_accumulator),
-                                speaker="Speaker 1",
-                                confidence=0.98
-                            ))
-
-                        full_text = " ".join(c.text for c in chunks)
-    except Exception as ex:
-        print(f"Subtitle extraction notice: {ex}", file=sys.stderr)
-
-    # 2. If subtitles were not directly extractable, use Gemini Audio Transcription if API key is set
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("AI_API_KEY")
-    if not chunks and gemini_key:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_key)
-            provider_name = "Google-Gemini-Flash"
-
-            # Download audio with yt-dlp to temp file
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                audio_tmpl = os.path.join(tmp_dir, "audio.%(ext)s")
-                ydl_audio_opts = {
-                    'format': 'm4a/bestaudio/best',
-                    'outtmpl': audio_tmpl,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'ffmpeg_location': FFMPEG_DIR
-                }
-                with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
-                    ydl.download([req.sourceUrl])
-
-                # Find downloaded file
-                audio_files = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir) if f.startswith("audio")]
-                if audio_files:
-                    audio_path = audio_files[0]
                     audio_upload = genai.upload_file(path=audio_path)
                     gemini_model_name = os.getenv("AI_MODEL") or "gemini-3.8-flash"
                     model = genai.GenerativeModel(gemini_model_name)
@@ -358,33 +276,104 @@ Return ONLY valid JSON matching this schema:
   }
 ]"""
                     resp = model.generate_content([prompt, audio_upload])
-                    resp_text = resp.text.strip()
-                    if resp_text.startswith("```json"):
-                        resp_text = resp_text[7:]
-                    if resp_text.endswith("```"):
-                        resp_text = resp_text[:-3]
-
-                    parsed = json.loads(resp_text.strip())
+                    resp_text = resp.text.strip().removeprefix("```json").removesuffix("```").strip()
+                    parsed = json.loads(resp_text)
                     for item in parsed:
                         chunks.append(TranscriptChunkItem(**item))
                     full_text = " ".join(c.text for c in chunks)
-        except Exception as gemini_ex:
-            print(f"Gemini transcription failed: {gemini_ex}", file=sys.stderr)
+            except Exception as gemini_ex:
+                print(f"Gemini local transcription failed: {gemini_ex}", file=sys.stderr)
 
-    # 3. Informative fallback if video has no auto-subtitles and Gemini key is not yet set
-    if not chunks:
-        full_text = f"Audio content for {req.sourceUrl}. (Provide GEMINI_API_KEY to enable deep multi-modal audio transcription for non-captioned media)."
-        chunks = [
-            TranscriptChunkItem(
-                chunkIndex=0,
-                startTime=0.0,
-                endTime=30.0,
-                text=f"Primary discussion segment extracted from {req.sourceUrl}.",
-                speaker="Speaker 1",
-                confidence=0.95
+        if not chunks:
+            raise HTTPException(
+                status_code=422,
+                detail="No transcript or captions available for this media source. Real media transcript or caption data is required."
             )
-        ]
-        provider_name = "SignalCut-Heuristics"
+
+    # 2. Remote URL: Extract official or auto-generated subtitle tracks (instant & precise)
+    elif req.sourceUrl.startswith("http://") or req.sourceUrl.startswith("https://"):
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'skip_download': True,
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'no_warnings': True
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(req.sourceUrl, download=False)
+                if info:
+                    subs = info.get("subtitles", {})
+                    auto_subs = info.get("automatic_captions", {})
+
+                    lang = req.language or "en"
+                    track_list = subs.get(lang) or subs.get("en") or auto_subs.get(lang) or auto_subs.get("en") or []
+
+                    json3_url = next((s["url"] for s in track_list if s.get("ext") == "json3"), None)
+                    if not json3_url and track_list:
+                        json3_url = track_list[0].get("url")
+
+                    if json3_url:
+                        http_req = urllib.request.Request(json3_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(http_req, timeout=15) as resp:
+                            sub_data = json.loads(resp.read().decode("utf-8"))
+                            events = sub_data.get("events", [])
+                            
+                            chunk_idx = 0
+                            sentence_accumulator = []
+                            sentence_start = 0.0
+                            sentence_end = 0.0
+
+                            for ev in events:
+                                if "segs" not in ev:
+                                    continue
+                                start_ms = ev.get("tStartMs", 0)
+                                dur_ms = ev.get("dDurationMs", 0)
+                                seg_text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
+                                if not seg_text or seg_text == "\n":
+                                    continue
+
+                                if not sentence_accumulator:
+                                    sentence_start = start_ms / 1000.0
+
+                                sentence_accumulator.append(seg_text)
+                                sentence_end = (start_ms + dur_ms) / 1000.0
+
+                                accumulated_str = " ".join(sentence_accumulator)
+                                if (sentence_end - sentence_start) >= 12.0 or accumulated_str.endswith((".", "!", "?")):
+                                    chunks.append(TranscriptChunkItem(
+                                        chunkIndex=chunk_idx,
+                                        startTime=round(sentence_start, 2),
+                                        endTime=round(sentence_end, 2),
+                                        text=accumulated_str,
+                                        speaker=f"Speaker {(chunk_idx % 2) + 1}",
+                                        confidence=0.98
+                                    ))
+                                    chunk_idx += 1
+                                    sentence_accumulator = []
+
+                            if sentence_accumulator:
+                                chunks.append(TranscriptChunkItem(
+                                    chunkIndex=chunk_idx,
+                                    startTime=round(sentence_start, 2),
+                                    endTime=round(sentence_end, 2),
+                                    text=" ".join(sentence_accumulator),
+                                    speaker="Speaker 1",
+                                    confidence=0.98
+                                ))
+
+                            full_text = " ".join(c.text for c in chunks)
+                            provider_name = "YouTube-Captions"
+        except Exception as ex:
+            print(f"Subtitle extraction notice: {ex}", file=sys.stderr)
+
+        if not chunks:
+            raise HTTPException(
+                status_code=422,
+                detail="No transcript or captions available for this media source. Real media transcript or caption data is required."
+            )
+    else:
+        raise HTTPException(status_code=400, detail=f"Invalid media path or URL: {req.sourceUrl}")
 
     words = full_text.split()
     return TranscriptionResponse(
@@ -440,7 +429,18 @@ Transcript:
 def detect_moments(req: MomentDetectionRequest):
     """
     Detects high-signal candidate moments based on ranking objectives using Gemini AI.
+    Requires real transcript text.
     """
+    if not req.transcriptText or not req.transcriptText.strip():
+        raise HTTPException(status_code=400, detail="Transcript text cannot be empty for moment detection.")
+
+    words = req.transcriptText.strip().split()
+    if len(words) < 15:
+        raise HTTPException(
+            status_code=422,
+            detail="Insufficient transcript text to detect high-signal moments. Real media speech content is required."
+        )
+
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("AI_API_KEY")
     topic_clean = req.topicQuery.strip(" ?")
 
@@ -492,12 +492,11 @@ Transcript:
         except Exception as ex:
             print(f"Gemini moment detection failed: {ex}", file=sys.stderr)
 
-    # Intelligent algorithmic moment segmentation from the actual transcript
+    # Algorithmic moment segmentation from the real transcript text
     sentences = [s.strip() for s in req.transcriptText.split(".") if len(s.strip()) > 15]
     if not sentences:
         sentences = [req.transcriptText]
 
-    # Group into 2 substantial moments
     mid = max(1, len(sentences) // 2)
     part1 = ". ".join(sentences[:mid]) + "."
     part2 = ". ".join(sentences[mid:mid * 2]) + "." if len(sentences) > mid else part1
@@ -548,17 +547,20 @@ Transcript:
 @app.post("/api/v1/render", response_model=RenderClipResponse)
 def render_video_clip(req: RenderClipRequest):
     """
-    Renders genuine 9:16 vertical short-form video from real source video using yt-dlp and FFmpeg.
-    Cuts exactly from startTime to endTime, creates dual-layer 9:16 vertical composition,
-    burns dynamic captions, and generates progress bar and thumbnail.
+    Renders genuine 9:16 vertical short-form video from authorized media using FFmpeg.
+    External video scraping/downloading (e.g. YouTube) is blocked.
     """
-    import yt_dlp
+    # 1. Block unauthorized external video platforms
+    if "youtube.com" in req.sourceVideoUrl.lower() or "youtu.be" in req.sourceVideoUrl.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="Direct rendering from external video platforms is not permitted. An authorized media file must be uploaded."
+        )
 
     duration = max(1.0, req.endTime - req.startTime)
     output_filename = f"clip_{req.clipId}_{int(time.time())}.mp4"
     thumb_filename = f"thumb_{req.clipId}_{int(time.time())}.jpg"
 
-    # Destination directory (shared with API wwwroot or local output)
     output_dir = os.environ.get("RENDERS_OUTPUT_DIR")
     if not output_dir:
         output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "src", "SignalCut.API", "wwwroot", "renders"))
@@ -569,9 +571,8 @@ def render_video_clip(req: RenderClipRequest):
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         source_segment_path = os.path.join(tmp_dir, "segment.mp4")
+        is_acquired = False
 
-        # 1. Acquire required segment: from authorized uploaded local media or permitted remote source
-        is_downloaded = False
         if os.path.exists(req.sourceVideoUrl):
             try:
                 cut_start = max(0.0, req.startTime)
@@ -585,35 +586,32 @@ def render_video_clip(req: RenderClipRequest):
                     source_segment_path
                 ]
                 subprocess.run(cmd_slice, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                is_downloaded = True
+                is_acquired = True
             except Exception as slice_err:
                 print(f"Warning: Local media slice failed: {slice_err}", file=sys.stderr)
         elif req.sourceVideoUrl.startswith("http://") or req.sourceVideoUrl.startswith("https://"):
+            # Permitted direct video stream URL
             try:
-                # Add 0.5s buffer before/after for smooth cut
                 cut_start = max(0.0, req.startTime)
                 cut_end = req.endTime
-
-                ydl_opts = {
-                    'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[ext=mp4]/best',
-                    'download_ranges': yt_dlp.utils.download_range_func(None, [(cut_start, cut_end)]),
-                    'force_keyframes_at_cuts': True,
-                    'outtmpl': os.path.join(tmp_dir, "raw_segment.%(ext)s"),
-                    'quiet': True,
-                    'no_warnings': True,
-                    'ffmpeg_location': FFMPEG_DIR
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([req.sourceVideoUrl])
-
-                # Identify downloaded raw segment
-                downloaded_files = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir) if f.startswith("raw_segment")]
-                if downloaded_files:
-                    source_segment_path = downloaded_files[0]
-                    is_downloaded = True
+                cmd_slice = [
+                    FFMPEG_BIN, "-y",
+                    "-ss", str(cut_start),
+                    "-to", str(cut_end),
+                    "-i", req.sourceVideoUrl,
+                    "-c", "copy",
+                    source_segment_path
+                ]
+                subprocess.run(cmd_slice, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                is_acquired = True
             except Exception as dl_err:
-                print(f"Warning: yt-dlp section download failed: {dl_err}", file=sys.stderr)
+                print(f"Warning: Direct stream slice failed: {dl_err}", file=sys.stderr)
+
+        if not is_acquired or not os.path.exists(source_segment_path) or os.path.getsize(source_segment_path) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source media file not found or could not be sliced: {req.sourceVideoUrl}"
+            )
 
         # 2. Render 9:16 Vertical Composition with FFmpeg
         clean_highlight = req.highlightColorHex.replace("#", "")
@@ -627,7 +625,7 @@ def render_video_clip(req: RenderClipRequest):
         progress_bar = f"drawbox=y=ih-16:color={clean_highlight}@1:width=iw:height=16:t=fill," if req.showProgressBar else ""
         caption_filter = f"drawtext=text='{safe_caption}':fontcolor={clean_primary}:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h*0.75"
 
-        if is_downloaded and os.path.exists(source_segment_path):
+        if is_acquired and os.path.exists(source_segment_path):
             # Dual-layer blurred 9:16 vertical stack
             # Background: stretched and blurred 1080x1920
             # Foreground: scaled to 1080 width, centered
@@ -635,13 +633,15 @@ def render_video_clip(req: RenderClipRequest):
                 f"[0:v]scale={req.width}:{req.height}:force_original_aspect_ratio=increase,crop={req.width}:{req.height},boxblur=25:5[bg];"
                 f"[0:v]scale={req.width}:-2:force_original_aspect_ratio=decrease[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2,"
-                f"{watermark_filter}{progress_bar}{caption_filter}"
+                f"{watermark_filter}{progress_bar}{caption_filter}[outv]"
             )
 
             cmd = [
                 FFMPEG_BIN, "-y",
                 "-i", source_segment_path,
-                "-vf", filter_graph,
+                "-filter_complex", filter_graph,
+                "-map", "[outv]",
+                "-map", "0:a?",
                 "-t", str(duration),
                 "-c:v", "libx264",
                 "-preset", "veryfast",

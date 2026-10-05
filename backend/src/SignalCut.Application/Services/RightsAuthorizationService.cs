@@ -24,6 +24,20 @@ public class RightsAuthorizationService : IRightsAuthorizationService
         _storage = storage;
     }
 
+    private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mov", ".mkv", ".webm", ".mp3", ".m4a", ".wav", ".aac"
+    };
+
+    private static readonly HashSet<string> AllowedMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "video/mp4", "video/quicktime", "video/webm", "video/x-matroska",
+        "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/aac", "audio/x-m4a", "audio/mp3",
+        "application/octet-stream"
+    };
+
+    private const long MaxFileSizeBytes = 500L * 1024 * 1024; // 500 MB max
+
     private static bool IsValidConfirmationStatement(string? statement)
     {
         if (string.IsNullOrWhiteSpace(statement)) return false;
@@ -34,7 +48,10 @@ public class RightsAuthorizationService : IRightsAuthorizationService
 
     public async Task<RightsConfirmationResponse> ConfirmRightsAsync(Guid organizationId, Guid userId, RightsConfirmationRequest request, CancellationToken ct = default)
     {
-        var source = await _context.Sources.FirstOrDefaultAsync(s => s.Id == request.SourceId && s.OrganizationId == organizationId, ct);
+        var source = await _context.Sources
+            .Include(s => s.MediaAssets)
+            .FirstOrDefaultAsync(s => s.Id == request.SourceId && s.OrganizationId == organizationId, ct);
+
         if (source == null)
         {
             throw new NotFoundException(nameof(Source), request.SourceId);
@@ -54,20 +71,36 @@ public class RightsAuthorizationService : IRightsAuthorizationService
             throw new ValidationException("ConfirmationStatement", "Explicit statement 'I confirm that I own this content or have permission to use, edit, and publish it.' or 'I confirm that I own or have permission to use this content.' is required.");
         }
 
-        source.RightsStatus = request.ClaimedRightsStatus;
-        source.AuthorizationStatus = AuthorizationStatus.VERIFIED;
+        var isDirectUserUpload = source.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || source.ContentType == ContentType.USER_UPLOAD;
+        var hasUploadedMedia = source.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
+        var isLicensedDirect = (request.ClaimedRightsStatus == RightsStatus.LICENSED || request.ClaimedRightsStatus == RightsStatus.PUBLIC_DOMAIN) && !string.IsNullOrEmpty(request.ProofDocumentUrl);
+
+        bool canDirectlyAuthorize = isDirectUserUpload || hasUploadedMedia || isLicensedDirect;
+
         source.RightsConfirmedByUserId = userId;
         source.RightsConfirmationTimestamp = DateTime.UtcNow;
         source.RightsConfirmationStatement = request.ConfirmationStatement.Trim();
         source.RightsProofDocumentUrl = request.ProofDocumentUrl;
         source.UpdatedAt = DateTime.UtcNow;
 
+        if (canDirectlyAuthorize)
+        {
+            source.RightsStatus = request.ClaimedRightsStatus;
+            source.AuthorizationStatus = AuthorizationStatus.VERIFIED;
+        }
+        else
+        {
+            // Discovered external sources MUST remain DISCOVERY_ONLY until authorized media is uploaded
+            source.RightsStatus = RightsStatus.DISCOVERY_ONLY;
+            source.AuthorizationStatus = AuthorizationStatus.PENDING;
+        }
+
         // Record immutable audit log
         var audit = new AuditLog
         {
             OrganizationId = organizationId,
             UserId = userId,
-            Action = "RIGHTS_CONFIRMED",
+            Action = canDirectlyAuthorize ? "RIGHTS_CONFIRMED" : "RIGHTS_CLAIM_RECORDED_PENDING_UPLOAD",
             ResourceType = "Source",
             ResourceId = source.Id.ToString(),
             DetailsJson = System.Text.Json.JsonSerializer.Serialize(new
@@ -78,43 +111,63 @@ public class RightsAuthorizationService : IRightsAuthorizationService
                 ClaimedStatus = request.ClaimedRightsStatus.ToString(),
                 ConfirmedBy = userId,
                 Timestamp = source.RightsConfirmationTimestamp,
-                ProofUrl = request.ProofDocumentUrl
+                ProofUrl = request.ProofDocumentUrl,
+                CanDirectlyAuthorize = canDirectlyAuthorize
             })
         };
 
         _context.AuditLogs.Add(audit);
         await _context.SaveChangesAsync(ct);
 
-        _logger.LogInformation("Rights confirmed for source {SourceId} by user {UserId} as {Status}", source.Id, userId, source.RightsStatus);
+        _logger.LogInformation("Rights claim recorded for source {SourceId} by user {UserId} as {ClaimedStatus} (Effective RightsStatus: {Status}, AuthStatus: {AuthStatus})",
+            source.Id, userId, request.ClaimedRightsStatus, source.RightsStatus, source.AuthorizationStatus);
+
+        var message = canDirectlyAuthorize
+            ? "Rights confirmed successfully. Source is authorized for clip generation."
+            : "This source is available for discovery, but SignalCut does not have an authorized way to retrieve the media. Upload the video/audio you have permission to use to continue.";
 
         return new RightsConfirmationResponse(
-            true,
+            canDirectlyAuthorize,
             source.Id,
             source.RightsStatus,
             source.AuthorizationStatus,
             source.RightsConfirmationTimestamp.Value,
-            "Rights confirmed successfully. Source is authorized for clip generation."
+            message
         );
     }
 
     public async Task<bool> AssertCanEnterGenerationPipelineAsync(Guid sourceId, CancellationToken ct = default)
     {
-        var source = await _context.Sources.FirstOrDefaultAsync(s => s.Id == sourceId, ct);
+        var source = await _context.Sources
+            .Include(s => s.MediaAssets)
+            .FirstOrDefaultAsync(s => s.Id == sourceId, ct);
+
         if (source == null)
         {
             throw new NotFoundException(nameof(Source), sourceId);
         }
 
-        // Section #4: Only USER_OWNED, USER_AUTHORIZED, LICENSED, or PUBLIC_DOMAIN content can enter the media generation pipeline.
+        var isDirectUserUpload = source.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || source.ContentType == ContentType.USER_UPLOAD;
+        var hasUploadedMedia = source.MediaAssets.Any(m => !string.IsNullOrEmpty(m.StorageUrl) || !string.IsNullOrEmpty(m.StorageKey));
+        var isVerifiedLicensed = (source.RightsStatus == RightsStatus.LICENSED || source.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
+
+        var hasAuthorizedMediaAccess = isDirectUserUpload || hasUploadedMedia || isVerifiedLicensed;
+
+        if (!hasAuthorizedMediaAccess || source.RightsStatus == RightsStatus.DISCOVERY_ONLY || source.RightsStatus == RightsStatus.BLOCKED || source.RightsStatus == RightsStatus.UNKNOWN)
+        {
+            _logger.LogWarning("Access denied to media generation pipeline for Source {SourceId}. External source has no authorized media access. RightsStatus: {Status}, HasMedia: {HasMedia}",
+                sourceId, source.RightsStatus, hasUploadedMedia);
+
+            throw new UnauthorizedMediaException(sourceId,
+                "This source is available for discovery, but SignalCut does not have an authorized way to retrieve the media. Upload the video/audio you have permission to use to continue.");
+        }
+
         bool isAuthorized = source.RightsStatus switch
         {
             RightsStatus.USER_OWNED => true,
             RightsStatus.USER_AUTHORIZED => source.AuthorizationStatus == AuthorizationStatus.VERIFIED,
-            RightsStatus.LICENSED => true,
+            RightsStatus.LICENSED => source.AuthorizationStatus == AuthorizationStatus.VERIFIED,
             RightsStatus.PUBLIC_DOMAIN => true,
-            RightsStatus.DISCOVERY_ONLY => false,
-            RightsStatus.BLOCKED => false,
-            RightsStatus.UNKNOWN => false,
             _ => false
         };
 
@@ -124,7 +177,7 @@ public class RightsAuthorizationService : IRightsAuthorizationService
                 sourceId, source.RightsStatus, source.AuthorizationStatus);
 
             throw new UnauthorizedMediaException(sourceId,
-                $"Content with rights status '{source.RightsStatus}' cannot enter the media generation pipeline. Explicit rights confirmation is required.");
+                "This source is available for discovery, but SignalCut does not have an authorized way to retrieve the media. Upload the video/audio you have permission to use to continue.");
         }
 
         return true;
@@ -165,8 +218,26 @@ public class RightsAuthorizationService : IRightsAuthorizationService
             throw new ValidationException("ConfirmationStatement", "Explicit statement 'I confirm that I own this content or have permission to use, edit, and publish it.' or 'I confirm that I own or have permission to use this content.' is required.");
         }
 
-        // Store file
+        // Validate file extension
         var ext = Path.GetExtension(fileName).ToLowerInvariant();
+        if (string.IsNullOrEmpty(ext) || !AllowedExtensions.Contains(ext))
+        {
+            throw new ValidationException("FileName", $"Unsupported file type '{ext}'. Allowed types: {string.Join(", ", AllowedExtensions)}");
+        }
+
+        // Validate MIME type if provided
+        if (!string.IsNullOrEmpty(contentType) && !AllowedMimeTypes.Contains(contentType))
+        {
+            throw new ValidationException("ContentType", $"Unsupported media content type '{contentType}'.");
+        }
+
+        // Validate file size limit
+        if (fileStream.CanSeek && fileStream.Length > MaxFileSizeBytes)
+        {
+            throw new ValidationException("FileSize", "File size exceeds the 500 MB maximum limit.");
+        }
+
+        // Multi-tenant directory isolation: media/{orgId}/{sourceId}/{randomGuid}{ext}
         var key = $"media/{organizationId:N}/{source.Id:N}/{Guid.NewGuid():N}{ext}";
         var storageUrl = await _storage.UploadAsync(key, fileStream, contentType, ct);
 

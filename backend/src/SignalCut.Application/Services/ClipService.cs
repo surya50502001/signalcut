@@ -246,12 +246,28 @@ public class ClipService : IClipService
                             .OrderByDescending(m => m.CreatedAt)
                             .FirstOrDefaultAsync();
 
+                        var isDirectUserUpload = bgClip.Moment.Source.Provider.Equals("UserUpload", StringComparison.OrdinalIgnoreCase) || bgClip.Moment.Source.ContentType == ContentType.USER_UPLOAD;
+                        var isLicensedStream = (bgClip.Moment.Source.RightsStatus == RightsStatus.LICENSED || bgClip.Moment.Source.RightsStatus == RightsStatus.PUBLIC_DOMAIN) && bgClip.Moment.Source.AuthorizationStatus == AuthorizationStatus.VERIFIED;
+
+                        if (mediaAsset == null && !isDirectUserUpload && !isLicensedStream)
+                        {
+                            throw new UnauthorizedMediaException(bgClip.Moment.SourceId,
+                                "Cannot render clip: No authorized media file found for this source. Discovered sources require uploaded media.");
+                        }
+
                         var sourceVideoUrl = mediaAsset?.StorageUrl ?? bgClip.Moment.Source.Url;
                         if (!string.IsNullOrEmpty(sourceVideoUrl) && sourceVideoUrl.StartsWith("/storage/"))
                         {
                             var relative = sourceVideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
                             var localPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", relative);
                             if (File.Exists(localPath)) sourceVideoUrl = localPath;
+                        }
+
+                        // Strictly ensure external YouTube or unverified video platform URLs are blocked
+                        if (sourceVideoUrl.Contains("youtube.com", StringComparison.OrdinalIgnoreCase) || sourceVideoUrl.Contains("youtu.be", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new UnauthorizedMediaException(bgClip.Moment.SourceId,
+                                "Direct rendering from external video platforms is not permitted. An authorized media file must be uploaded.");
                         }
 
                         var renderReq = new RenderVideoRequest(

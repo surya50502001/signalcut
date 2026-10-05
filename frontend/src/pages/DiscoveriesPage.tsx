@@ -141,6 +141,12 @@ export const DiscoveriesPage: React.FC = () => {
                     </span>
                   </div>
                 </div>
+
+                {!source.isAuthorizedForGeneration && (
+                  <div className="bg-amber-950/20 border border-amber-900/30 rounded-xl p-2.5 text-[11px] text-amber-300/90 leading-relaxed mt-1">
+                    Discovery only — SignalCut cannot retrieve this media. Upload a copy you have permission to use to create clips.
+                  </div>
+                )}
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex items-center justify-between">

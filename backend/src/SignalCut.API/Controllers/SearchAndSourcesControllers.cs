@@ -80,6 +80,20 @@ public class SourcesController : ControllerBase
         return Ok(new { success = true, data = response });
     }
 
+    private static readonly HashSet<string> AllowedUploadExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp4", ".mov", ".mkv", ".webm", ".mp3", ".m4a", ".wav", ".aac"
+    };
+
+    private static readonly HashSet<string> AllowedUploadMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "video/mp4", "video/quicktime", "video/webm", "video/x-matroska",
+        "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav", "audio/aac", "audio/x-m4a", "audio/mp3",
+        "application/octet-stream"
+    };
+
+    private const long MaxUploadSizeBytes = 500L * 1024 * 1024; // 500 MB max
+
     [HttpPost("{id}/upload-media")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UploadMedia(
@@ -95,6 +109,24 @@ public class SourcesController : ControllerBase
             return BadRequest(new { success = false, error = new { code = "INVALID_FILE", message = "A video or audio file must be uploaded." } });
         }
 
+        if (file.Length > MaxUploadSizeBytes)
+        {
+            return BadRequest(new { success = false, error = new { code = "FILE_TOO_LARGE", message = "Uploaded file exceeds the maximum allowed size of 500 MB." } });
+        }
+
+        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (string.IsNullOrEmpty(ext) || !AllowedUploadExtensions.Contains(ext))
+        {
+            return BadRequest(new { success = false, error = new { code = "INVALID_EXTENSION", message = $"File extension '{ext}' is not supported. Allowed formats: {string.Join(", ", AllowedUploadExtensions)}" } });
+        }
+
+        if (!string.IsNullOrEmpty(file.ContentType) && !AllowedUploadMimeTypes.Contains(file.ContentType))
+        {
+            return BadRequest(new { success = false, error = new { code = "INVALID_MIME_TYPE", message = $"MIME type '{file.ContentType}' is not permitted." } });
+        }
+
+        var sanitizedFileName = Path.GetFileName(file.FileName);
+
         var orgId = _userContext.OrganizationId ?? Guid.Parse("00000000-0000-0000-0000-000000000001");
         var userId = _userContext.UserId ?? Guid.Parse("00000000-0000-0000-0000-000000000002");
 
@@ -105,7 +137,7 @@ public class SourcesController : ControllerBase
             userId,
             id,
             stream,
-            file.FileName,
+            sanitizedFileName,
             file.ContentType,
             confirmReq,
             ct);

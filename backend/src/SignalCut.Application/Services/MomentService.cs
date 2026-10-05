@@ -14,6 +14,7 @@ public class MomentService : IMomentService
     private readonly ILanguageModelProvider _llmProvider;
     private readonly ITranscriptProvider _transcriptProvider;
     private readonly ICreditWalletService _creditWalletService;
+    private readonly IRightsAuthorizationService _rightsAuthService;
     private readonly ILogger<MomentService> _logger;
 
     public MomentService(
@@ -21,12 +22,14 @@ public class MomentService : IMomentService
         ILanguageModelProvider llmProvider,
         ITranscriptProvider transcriptProvider,
         ICreditWalletService creditWalletService,
+        IRightsAuthorizationService rightsAuthService,
         ILogger<MomentService> logger)
     {
         _context = context;
         _llmProvider = llmProvider;
         _transcriptProvider = transcriptProvider;
         _creditWalletService = creditWalletService;
+        _rightsAuthService = rightsAuthService;
         _logger = logger;
     }
 
@@ -42,7 +45,10 @@ public class MomentService : IMomentService
             throw new NotFoundException(nameof(Source), sourceId);
         }
 
-        // Cost control & Credit check (10 credits for AI Moment Analysis)
+        // 1. CRITICAL: Strict Rights & Media Access Gate
+        await _rightsAuthService.AssertCanEnterGenerationPipelineAsync(sourceId, ct);
+
+        // 2. Cost control & Credit check (10 credits for AI Moment Analysis)
         const decimal requiredCredits = 10m;
         var wallet = await _creditWalletService.GetWalletAsync(organizationId, ct);
         if (wallet.AvailableBalance < requiredCredits)
@@ -56,7 +62,7 @@ public class MomentService : IMomentService
 
         try
         {
-            // 1. Ensure transcript is available
+            // 3. Ensure transcript is available from authorized media
             Transcript transcript;
             if (source.Transcript != null)
             {
@@ -64,24 +70,25 @@ public class MomentService : IMomentService
             }
             else
             {
-                var fetched = await _transcriptProvider.FetchExistingTranscriptAsync(source.Url, ct);
-                if (fetched == null)
+                // Resolve authorized media target
+                var mediaAsset = await _context.MediaAssets
+                    .Where(m => m.SourceId == source.Id)
+                    .OrderByDescending(m => m.CreatedAt)
+                    .FirstOrDefaultAsync(ct);
+
+                var targetMediaUrl = mediaAsset?.StorageUrl ?? source.Url;
+                if (!string.IsNullOrEmpty(targetMediaUrl) && targetMediaUrl.StartsWith("/storage/"))
                 {
-                    // Fallback to sample/synthesized transcript for demonstration or dev
-                    fetched = new TranscriptResult(
-                        $"This is a comprehensive discussion regarding {source.Title}. The key insight is that modern automated workflows and AI models significantly alter human productivity when applied to domain-specific knowledge pipelines. Developers and content creators spend less time on manual editing and more time curating high-signal ideas. Furthermore, the bottleneck is no longer content generation, but high-signal distribution.",
-                        "en",
-                        65,
-                        new List<TranscriptChunkResult>
-                        {
-                            new(0, 0, 15, $"Welcome back. Today we are unpacking {source.Title}.", source.Creator, 0.98),
-                            new(1, 15, 45, "The key insight is that modern automated workflows and AI models significantly alter human productivity.", source.Creator, 0.97),
-                            new(2, 45, 75, "Developers and content creators spend less time on manual editing and more time curating high-signal ideas.", source.Creator, 0.99),
-                            new(3, 75, 95, "Furthermore, the bottleneck is no longer content generation, but high-signal distribution.", source.Creator, 0.96)
-                        },
-                        true,
-                        "Whisper"
-                    );
+                    var relative = targetMediaUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                    var localPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", relative);
+                    if (File.Exists(localPath)) targetMediaUrl = localPath;
+                }
+
+                var fetched = await _transcriptProvider.FetchExistingTranscriptAsync(targetMediaUrl, ct);
+                if (fetched == null || fetched.Chunks == null || fetched.Chunks.Count == 0)
+                {
+                    _logger.LogWarning("No transcript could be obtained from authorized media for source {SourceId} ('{Title}')", source.Id, source.Title);
+                    throw new InvalidOperationException($"Unable to extract transcript from the authorized media for source '{source.Title}'. Real media transcript or caption data is required.");
                 }
 
                 transcript = new Transcript

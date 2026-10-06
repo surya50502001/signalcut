@@ -211,10 +211,10 @@ export const AnalyticsPage: React.FC = () => {
       {/* Metrics Grid */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
         {[
-          { label: 'Topic Searches', value: analytics?.totalSearches ?? 24, change: '+18% this week' },
-          { label: 'Sources Discovered', value: analytics?.totalSourcesDiscovered ?? 86, change: '100% rights tracked' },
-          { label: 'Clips Generated', value: analytics?.totalClipsGenerated ?? 18, change: '1080x1920 9:16' },
-          { label: 'Hours Saved', value: `${analytics?.estimatedTimeSavedHours ?? 13.5}h`, change: 'Estimated manual edit time' },
+          { label: 'Topic Searches', value: analytics?.totalSearches ?? 0, change: 'Lifetime query count' },
+          { label: 'Sources Discovered', value: analytics?.totalSourcesDiscovered ?? 0, change: 'Rights compliance tracked' },
+          { label: 'Clips Generated', value: analytics?.totalClipsGenerated ?? 0, change: '1080x1920 9:16' },
+          { label: 'Hours Saved', value: `${analytics?.estimatedTimeSavedHours ?? 0}h`, change: 'Estimated manual edit time' },
         ].map((stat, i) => (
           <div key={i} className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-2 shadow-xl">
             <div className="text-xs font-semibold text-slate-400">{stat.label}</div>

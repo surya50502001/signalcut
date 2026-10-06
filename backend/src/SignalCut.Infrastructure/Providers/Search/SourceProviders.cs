@@ -111,47 +111,95 @@ public class YouTubeSourceProvider : ISourceProvider
 
 public class PodcastSourceProvider : ISourceProvider
 {
+    private readonly HttpClient _httpClient;
     private readonly ILogger<PodcastSourceProvider> _logger;
 
     public string ProviderName => "Podcast";
 
-    public PodcastSourceProvider(ILogger<PodcastSourceProvider> logger)
+    public PodcastSourceProvider(HttpClient httpClient, ILogger<PodcastSourceProvider> logger)
     {
+        _httpClient = httpClient;
         _logger = logger;
     }
 
-    public Task<IEnumerable<SourceDiscoveryItem>> SearchAsync(string query, int limit = 20, CancellationToken ct = default)
+    public async Task<IEnumerable<SourceDiscoveryItem>> SearchAsync(string query, int limit = 20, CancellationToken ct = default)
     {
-        _logger.LogInformation("Searching Podcast feeds for query: {Query}", query);
+        _logger.LogInformation("Searching real Podcast feeds via iTunes API for query: {Query}", query);
 
-        var sanitizedTopic = query.Replace("?", "").Trim();
-        var items = new List<SourceDiscoveryItem>
+        try
         {
-            new(
-                $"pod_{Math.Abs(query.GetHashCode()) % 100000 + 201}",
-                ProviderName,
-                $"The Deep Dive: {sanitizedTopic} Unpacked with Founders",
-                $"Episode #142: Detailed conversational interview examining {sanitizedTopic} with leading startup founders and domain experts.",
-                "Founders & Builders Podcast",
-                $"https://podcasts.signalcut.app/episodes/{Math.Abs(query.GetHashCode()) % 90000 + 30000}",
-                DateTime.UtcNow.AddDays(-5),
-                2840,
-                "https://images.unsplash.com/photo-1590602847861-f357a9332bbc?w=800&q=80",
-                "en",
-                ContentType.PODCAST,
-                RightsStatus.DISCOVERY_ONLY,
-                AuthorizationStatus.NOT_REQUIRED,
-                TranscriptAvailability: true,
-                RelevanceScore: 0.94
-            )
-        };
+            var searchUrl = $"https://itunes.apple.com/search?term={Uri.EscapeDataString(query)}&media=podcast&entity=podcastEpisode&limit={Math.Min(limit, 15)}";
+            var response = await _httpClient.GetAsync(searchUrl, ct);
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadFromJsonAsync<ItunesSearchResponse>(cancellationToken: ct);
+                if (content?.Results != null && content.Results.Count > 0)
+                {
+                    var items = new List<SourceDiscoveryItem>();
+                    for (int i = 0; i < content.Results.Count; i++)
+                    {
+                        var ep = content.Results[i];
+                        var durationSec = (int)((ep.TrackTimeMillis ?? 1800000) / 1000);
+                        var pubDate = DateTime.TryParse(ep.ReleaseDate, out var dt) ? dt : DateTime.UtcNow.AddDays(-i);
+                        var episodeUrl = ep.EpisodeUrl ?? ep.TrackViewUrl ?? $"https://podcasts.apple.com/podcast/id{ep.CollectionId}";
+                        var thumbUrl = ep.ArtworkUrl600 ?? ep.ArtworkUrl100 ?? "https://images.unsplash.com/photo-1590602847861-f357a9332bbc?w=800&q=80";
+                        var score = Math.Round(Math.Max(0.70, 0.95 - (i * 0.03)), 2);
 
-        return Task.FromResult<IEnumerable<SourceDiscoveryItem>>(items);
+                        items.Add(new SourceDiscoveryItem(
+                            $"pod_{ep.TrackId ?? ep.CollectionId ?? (long)i}",
+                            ProviderName,
+                            ep.TrackName ?? "Untitled Podcast Episode",
+                            ep.Description ?? $"Discussion from {ep.CollectionName ?? "Podcast"}.",
+                            ep.CollectionName ?? ep.ArtistName ?? "Podcast Creator",
+                            episodeUrl,
+                            pubDate,
+                            durationSec,
+                            thumbUrl,
+                            "en",
+                            ContentType.PODCAST,
+                            RightsStatus.DISCOVERY_ONLY,
+                            AuthorizationStatus.NOT_REQUIRED,
+                            TranscriptAvailability: true,
+                            RelevanceScore: score
+                        ));
+                    }
+                    return items;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to search real iTunes podcasts for '{Query}'", query);
+        }
+
+        return Enumerable.Empty<SourceDiscoveryItem>();
     }
 
     public Task<SourceDiscoveryItem?> GetMetadataAsync(string urlOrId, CancellationToken ct = default)
     {
         return Task.FromResult<SourceDiscoveryItem?>(null);
+    }
+
+    private sealed class ItunesSearchResponse
+    {
+        public int ResultCount { get; set; }
+        public List<ItunesEpisodeItem>? Results { get; set; }
+    }
+
+    private sealed class ItunesEpisodeItem
+    {
+        public long? TrackId { get; set; }
+        public long? CollectionId { get; set; }
+        public string? TrackName { get; set; }
+        public string? CollectionName { get; set; }
+        public string? ArtistName { get; set; }
+        public string? Description { get; set; }
+        public string? EpisodeUrl { get; set; }
+        public string? TrackViewUrl { get; set; }
+        public string? ArtworkUrl600 { get; set; }
+        public string? ArtworkUrl100 { get; set; }
+        public string? ReleaseDate { get; set; }
+        public long? TrackTimeMillis { get; set; }
     }
 }
 
@@ -161,29 +209,8 @@ public class WebVideoSourceProvider : ISourceProvider
 
     public Task<IEnumerable<SourceDiscoveryItem>> SearchAsync(string query, int limit = 20, CancellationToken ct = default)
     {
-        var sanitizedTopic = query.Replace("?", "").Trim();
-        var items = new List<SourceDiscoveryItem>
-        {
-            new(
-                $"conf_{Math.Abs(query.GetHashCode()) % 100000 + 301}",
-                ProviderName,
-                $"Global Summit Panel: The Future of {sanitizedTopic}",
-                $"Executive panel discussion discussing the real-world operational challenges of {sanitizedTopic}.",
-                "Global Tech Summit 2026",
-                $"https://conferences.signalcut.app/sessions/{Math.Abs(query.GetHashCode()) % 90000 + 40000}",
-                DateTime.UtcNow.AddDays(-20),
-                3600,
-                "https://images.unsplash.com/photo-1475721027785-f74eccf877e2?w=800&q=80",
-                "en",
-                ContentType.CONFERENCE,
-                RightsStatus.DISCOVERY_ONLY,
-                AuthorizationStatus.NOT_REQUIRED,
-                TranscriptAvailability: true,
-                RelevanceScore: 0.88
-            )
-        };
-
-        return Task.FromResult<IEnumerable<SourceDiscoveryItem>>(items);
+        // No synthetic mock data — only genuine indexed video sources
+        return Task.FromResult(Enumerable.Empty<SourceDiscoveryItem>());
     }
 
     public Task<SourceDiscoveryItem?> GetMetadataAsync(string urlOrId, CancellationToken ct = default)
@@ -198,29 +225,8 @@ public class UserUploadMediaProvider : ISourceProvider
 
     public Task<IEnumerable<SourceDiscoveryItem>> SearchAsync(string query, int limit = 20, CancellationToken ct = default)
     {
-        // User uploads are inherently USER_OWNED and verified
-        var items = new List<SourceDiscoveryItem>
-        {
-            new(
-                "user_media_demo_01",
-                ProviderName,
-                $"Internal Recorded Demo: {query}",
-                $"Your connected studio recording regarding {query}.",
-                "Your Workspace",
-                "https://cdn.signalcut.app/demo/internal_recording.mp4",
-                DateTime.UtcNow.AddHours(-12),
-                920,
-                "https://images.unsplash.com/photo-1534447677768-be436bb09401?w=800&q=80",
-                "en",
-                ContentType.USER_UPLOAD,
-                RightsStatus.USER_OWNED, // Pre-authorized because user owns this media!
-                AuthorizationStatus.VERIFIED,
-                TranscriptAvailability: true,
-                RelevanceScore: 0.99
-            )
-        };
-
-        return Task.FromResult<IEnumerable<SourceDiscoveryItem>>(items);
+        // No fake demo video — user uploads are retrieved from the workspace database
+        return Task.FromResult(Enumerable.Empty<SourceDiscoveryItem>());
     }
 
     public Task<SourceDiscoveryItem?> GetMetadataAsync(string urlOrId, CancellationToken ct = default)

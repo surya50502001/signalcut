@@ -99,9 +99,9 @@ export const DashboardPage: React.FC = () => {
       {/* Metrics Row */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Credit Balance', val: organization?.availableCredits ?? 50, sub: 'Pay-as-you-go', icon: Coins, color: 'text-amber-400' },
-          { label: 'Discovered Sources', val: sources.length > 0 ? sources.length : 12, sub: 'Aggregated & Ranked', icon: Sparkles, color: 'text-purple-400' },
-          { label: 'Generated Clips', val: clips.length > 0 ? clips.length : 4, sub: '9:16 Vertical Video', icon: Video, color: 'text-indigo-400' },
+          { label: 'Credit Balance', val: organization?.availableCredits ?? 0, sub: 'Pay-as-you-go', icon: Coins, color: 'text-amber-400' },
+          { label: 'Discovered Sources', val: sources.length, sub: 'Aggregated & Ranked', icon: Sparkles, color: 'text-purple-400' },
+          { label: 'Generated Clips', val: clips.length, sub: '9:16 Vertical Video', icon: Video, color: 'text-indigo-400' },
           { label: 'Social Channels', val: 4, sub: 'YouTube, TikTok, Reels, LinkedIn', icon: Share2, color: 'text-emerald-400' },
         ].map((item, i) => {
           const Icon = item.icon;
@@ -133,42 +133,31 @@ export const DashboardPage: React.FC = () => {
           </div>
 
           <div className="space-y-3">
-            {(sources.length > 0
-              ? sources
-              : [
-                  {
-                    id: 'sample-1',
-                    title: 'The Real Truth About AI Agents & Development',
-                    creator: 'Tech Founders Roundtable',
-                    provider: 'Podcast',
-                    relevanceScore: 0.96,
-                  },
-                  {
-                    id: 'sample-2',
-                    title: 'Executive Summit: Transforming Knowledge Pipelines',
-                    creator: 'Global Tech Summit 2026',
-                    provider: 'Conference',
-                    relevanceScore: 0.92,
-                  },
-                ]
-            ).map((s) => (
-              <div
-                key={s.id}
-                onClick={() => navigate(`/moments?sourceId=${s.id}`)}
-                className="p-3.5 bg-slate-950/60 hover:bg-slate-800/50 border border-slate-800 rounded-2xl cursor-pointer transition flex items-center justify-between"
-              >
-                <div className="space-y-0.5 max-w-[70%]">
-                  <div className="font-bold text-xs text-slate-200 truncate">{s.title}</div>
-                  <div className="text-[11px] text-slate-400">{s.creator} • {s.provider}</div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <span className="text-xs font-bold text-emerald-400">
-                    {Math.round((s.relevanceScore || 0.95) * 100)}%
-                  </span>
-                  <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
-                </div>
+            {sources.length === 0 ? (
+              <div className="p-8 text-center bg-slate-950/40 border border-slate-800/60 rounded-2xl space-y-1">
+                <div className="text-xs text-slate-300 font-medium">No sources discovered yet</div>
+                <p className="text-[11px] text-slate-500">Search for a topic above to discover relevant discussions.</p>
               </div>
-            ))}
+            ) : (
+              sources.map((s) => (
+                <div
+                  key={s.id}
+                  onClick={() => navigate(`/moments?sourceId=${s.id}`)}
+                  className="p-3.5 bg-slate-950/60 hover:bg-slate-800/50 border border-slate-800 rounded-2xl cursor-pointer transition flex items-center justify-between"
+                >
+                  <div className="space-y-0.5 max-w-[70%]">
+                    <div className="font-bold text-xs text-slate-200 truncate">{s.title}</div>
+                    <div className="text-[11px] text-slate-400">{s.creator} • {s.provider}</div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs font-bold text-emerald-400">
+                      {Math.round((s.relevanceScore || 0.95) * 100)}%
+                    </span>
+                    <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
@@ -185,35 +174,31 @@ export const DashboardPage: React.FC = () => {
           </div>
 
           <div className="space-y-3">
-            {(clips.length > 0
-              ? clips
-              : [
-                  {
-                    id: 'sample-clip-1',
-                    title: 'How AI Agents Shift Workflows',
-                    hook: 'The entire leverage structure of work is flipping right now.',
-                    aspectRatio: '9:16',
-                    renderStatus: 'COMPLETED',
-                  },
-                ]
-            ).map((c) => (
-              <div
-                key={c.id}
-                onClick={() => navigate(`/editor?clipId=${c.id}`)}
-                className="p-3.5 bg-slate-950/60 hover:bg-slate-800/50 border border-slate-800 rounded-2xl cursor-pointer transition flex items-center justify-between"
-              >
-                <div className="space-y-0.5 max-w-[70%]">
-                  <div className="font-bold text-xs text-slate-200 truncate">{c.title}</div>
-                  <div className="text-[11px] text-purple-300 truncate">"{c.hook}"</div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                    {c.renderStatus || 'Ready'}
-                  </span>
-                  <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
-                </div>
+            {clips.length === 0 ? (
+              <div className="p-8 text-center bg-slate-950/40 border border-slate-800/60 rounded-2xl space-y-1">
+                <div className="text-xs text-slate-300 font-medium">No clips rendered yet</div>
+                <p className="text-[11px] text-slate-500">Select high-signal moments to render your vertical shorts.</p>
               </div>
-            ))}
+            ) : (
+              clips.map((c) => (
+                <div
+                  key={c.id}
+                  onClick={() => navigate(`/editor?clipId=${c.id}`)}
+                  className="p-3.5 bg-slate-950/60 hover:bg-slate-800/50 border border-slate-800 rounded-2xl cursor-pointer transition flex items-center justify-between"
+                >
+                  <div className="space-y-0.5 max-w-[70%]">
+                    <div className="font-bold text-xs text-slate-200 truncate">{c.title}</div>
+                    <div className="text-[11px] text-purple-300 truncate">"{c.hook}"</div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
+                      {c.renderStatus || 'Ready'}
+                    </span>
+                    <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>

@@ -124,9 +124,7 @@ export const LoginPage: React.FC = () => {
       await login(email, password);
       navigate('/dashboard');
     } catch (err: any) {
-      // Fallback demo for instantaneous testing
-      await loginDemo();
-      navigate('/dashboard');
+      setError(err.response?.data?.error?.message || err.response?.data?.message || err.message || 'Login failed. Please verify credentials.');
     } finally {
       setLoading(false);
     }
@@ -213,9 +211,7 @@ export const SignupPage: React.FC = () => {
       await register(email, password, fullName, orgName);
       navigate('/dashboard');
     } catch (err: any) {
-      // Fallback demo
-      await loginDemo();
-      navigate('/dashboard');
+      setError(err.response?.data?.error?.message || err.response?.data?.message || err.message || 'Registration failed. Please check your details.');
     } finally {
       setLoading(false);
     }

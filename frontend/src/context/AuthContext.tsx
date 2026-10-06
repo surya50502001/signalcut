@@ -32,7 +32,16 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('signalcut_token'));
+  const [token, setToken] = useState<string | null>(() => {
+    const saved = localStorage.getItem('signalcut_token');
+    if (saved === 'mock_demo_jwt_token') {
+      localStorage.removeItem('signalcut_token');
+      localStorage.removeItem('signalcut_user');
+      localStorage.removeItem('signalcut_org');
+      return null;
+    }
+    return saved;
+  });
   const [user, setUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('signalcut_user');
     return saved ? JSON.parse(saved) : null;
@@ -69,26 +78,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginDemo = async () => {
-    try {
-      await login('demo@signalcut.app', 'DemoPassword123!');
-    } catch {
-      // If server not currently running, provide fallback mock state for offline viewing
-      const mockUser: User = {
-        id: '00000000-0000-0000-0000-000000000002',
-        email: 'demo@signalcut.app',
-        fullName: 'Alex Rivera',
-        role: 'ADMIN',
-        isEmailVerified: true,
-        hasUsedFreeTrial: false,
-      };
-      const mockOrg: Organization = {
-        id: '00000000-0000-0000-0000-000000000001',
-        name: 'SignalCut Creator Studio',
-        slug: 'signalcut-demo',
-        availableCredits: 250,
-      };
-      saveAuth('mock_demo_jwt_token', mockUser, mockOrg);
-    }
+    await login('demo@signalcut.app', 'DemoPassword123!');
   };
 
   const logout = () => {

@@ -94,20 +94,20 @@ export const AdminPage: React.FC = () => {
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
         <div className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-2 shadow-xl">
           <div className="text-xs font-semibold text-slate-400">Total Platform Users</div>
-          <div className="text-3xl font-extrabold text-white">{metrics?.totalUsers ?? 142}</div>
-          <div className="text-[11px] text-purple-400 font-semibold">{metrics?.totalOrganizations ?? 48} Organizations</div>
+          <div className="text-3xl font-extrabold text-white">{metrics?.totalUsers ?? 0}</div>
+          <div className="text-[11px] text-purple-400 font-semibold">{metrics?.totalOrganizations ?? 0} Organizations</div>
         </div>
 
         <div className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-2 shadow-xl">
           <div className="text-xs font-semibold text-slate-400">Verified Revenue</div>
-          <div className="text-3xl font-extrabold text-emerald-400">₹{metrics?.totalRevenue ?? '48,500'}</div>
+          <div className="text-3xl font-extrabold text-emerald-400">₹{metrics?.totalRevenue ?? '0'}</div>
           <div className="text-[11px] text-slate-400">Stripe & Razorpay</div>
         </div>
 
         <div className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-2 shadow-xl">
           <div className="text-xs font-semibold text-slate-400">AI Compute Costs</div>
-          <div className="text-3xl font-extrabold text-slate-200">${metrics?.estimatedAiCosts ?? '184.20'}</div>
-          <div className="text-[11px] text-emerald-400 font-semibold">{metrics?.grossMargin ?? 87.4}% Gross Margin</div>
+          <div className="text-3xl font-extrabold text-slate-200">${metrics?.estimatedAiCosts ?? '0.00'}</div>
+          <div className="text-[11px] text-emerald-400 font-semibold">{metrics?.grossMargin ?? 0}% Gross Margin</div>
         </div>
 
         <div className="p-6 bg-slate-900 border border-slate-800 rounded-3xl space-y-2 shadow-xl">
